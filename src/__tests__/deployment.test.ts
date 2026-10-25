@@ -2,11 +2,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import * as asar from '@electron/asar';
-import { deploy, fingerprint, parseArgs, preflight, REQUIRED_BUILD_FILES } from '../../scripts/deploy.mjs';
+import {
+  deploy,
+  fingerprint,
+  hashDirectory,
+  parseArgs,
+  preflight,
+  REQUIRED_BUILD_FILES,
+} from '../../scripts/deploy.mjs';
+import { prepareMacClone, restoreMacClone, verifyMacClone } from '../../scripts/macos-clone.mjs';
 
 // Real ASAR packing can exceed the default 5 seconds on a busy Windows disk.
 // Allow it to finish before cleanup removes files still being packed.
@@ -478,5 +486,78 @@ describe('optional fixed-port Windows language-server patch', () => {
     expect(() => parseArgs(['--check', '--restore'])).toThrow('USAGE');
     expect(() => parseArgs(['--restore', '--patch-language-server'])).toThrow('USAGE');
     expect(() => parseArgs(['--unknown'])).toThrow('USAGE');
+  });
+});
+
+// 실제 codesign 으로 ad-hoc 서명한 최소 .app 을 원본 대용으로 쓴다(Google 서명 자체는 검증 대상이 아니다).
+describe.skipIf(process.platform !== 'darwin')('macOS signed clone', () => {
+  async function signedApp(f: { root: string }) {
+    const app = path.join(f.root, 'Antigravity.app');
+    await installVendor(f.root, path.join(app, 'Contents/Resources'));
+    fs.mkdirSync(path.join(app, 'Contents/MacOS'), { recursive: true });
+    fs.copyFileSync('/usr/bin/true', path.join(app, 'Contents/MacOS/Antigravity'));
+    put(
+      path.join(app, 'Contents/Info.plist'),
+      '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>' +
+        '<key>CFBundleExecutable</key><string>Antigravity</string>' +
+        '<key>CFBundleIdentifier</key><string>com.google.antigravity</string>' +
+        '<key>CFBundleName</key><string>Antigravity</string>' +
+        '<key>CFBundlePackageType</key><string>APPL</string>' +
+        '<key>CFBundleShortVersionString</key><string>2.0.1</string></dict></plist>',
+    );
+    execFileSync('codesign', ['--force', '--sign', '-', '--timestamp=none', app]);
+    return app;
+  }
+
+  it('refuses a clone path that is, or lies inside, the original app', async () => {
+    const f = await fixture();
+    const app = await signedApp(f);
+    const before = hashDirectory(app);
+    for (const target of [app, path.join(app, 'Contents/Clone.app')]) {
+      await expect(prepareMacClone({ source: app, target, dist: f.dist })).rejects.toThrow('UNSAFE_TARGET');
+    }
+    for (const profile of [app, path.join(app, 'Contents/profile')]) {
+      await expect(prepareMacClone({ source: app, target: path.join(f.root, 'Clone.app'), dist: f.dist, profile })).rejects.toThrow('UNSAFE_PROFILE');
+    }
+    expect(hashDirectory(app)).toBe(before);
+  });
+
+  it('keeps the original intact and leaves no clone or staging directory when preparation fails', async () => {
+    const f = await fixture();
+    const app = await signedApp(f);
+    const before = hashDirectory(app);
+    const listing = fs.readdirSync(f.root).sort();
+    const sign = async () => {
+      throw new Error('sign failed');
+    };
+    await expect(
+      prepareMacClone({ source: app, target: path.join(f.root, 'Clone.app'), dist: f.dist }, { sign }),
+    ).rejects.toThrow('sign failed');
+    expect(hashDirectory(app)).toBe(before);
+    expect(fs.readdirSync(f.root).sort()).toEqual(listing);
+  });
+
+  it('detects a clone modified after signing', async () => {
+    const f = await fixture();
+    const app = await signedApp(f);
+    const target = path.join(f.root, 'Clone.app');
+    await prepareMacClone({ source: app, target, dist: f.dist });
+    expect(await verifyMacClone({ target })).toMatchObject({ signature: 'adhoc', entitlementsPreserved: true });
+    fs.appendFileSync(path.join(target, 'Contents/Resources/app.asar'), 'tampered');
+    await expect(verifyMacClone({ target })).rejects.toThrow('CLONE_SIGNATURE_INVALID');
+  });
+
+  it('removes only the clone on restore and preserves every original byte', async () => {
+    const f = await fixture();
+    const app = await signedApp(f);
+    const before = hashDirectory(app);
+    const target = path.join(f.root, 'Clone.app');
+    await prepareMacClone({ source: app, target, dist: f.dist });
+    expect(hashDirectory(app)).toBe(before);
+    restoreMacClone({ target });
+    expect(fs.existsSync(target)).toBe(false);
+    expect(fs.existsSync(target + '.clone.json')).toBe(false);
+    expect(hashDirectory(app)).toBe(before);
+    execFileSync('codesign', ['--verify', '--deep', '--strict', app]);
   });
 });

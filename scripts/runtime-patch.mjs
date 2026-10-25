@@ -86,7 +86,7 @@ function applyEdits(file, source, edits) {
   return Buffer.from(source);
 }
 
-function patchMain(bytes) {
+function patchMain(bytes, cloneUserDataDir) {
   const file = 'dist/main.js';
   const { source, tree } = parse(file, bytes);
   const ready = one(
@@ -111,10 +111,22 @@ function patchMain(bytes) {
   for (let node = ready.parent; node !== statement; node = node.parent) {
     if (ts.isFunctionLike(node)) unsupported(file, 'startup hook is nested inside a function');
   }
+  // 경로는 모듈 초기화 전에 분리하되, updater는 원본 초기 설정 뒤에 읽는다.
+  const profileEdit = cloneUserDataDir ? [{ start: 0, text: `"use strict";\n{
+    const profile = ${JSON.stringify(cloneUserDataDir)};
+    require('node:fs').mkdirSync(profile, { recursive: true, mode: 0o700 });
+    require('electron').app.setPath('userData', profile);
+  }\n` }] : [];
+  const updatePolicy = cloneUserDataDir ? `{
+    const updater = require('electron-updater').autoUpdater;
+    updater.checkForUpdates = () => Promise.resolve(null);
+    updater.checkForUpdatesAndNotify = () => Promise.resolve(null);
+  }\n` : '';
   return applyEdits(file, source, [
+    ...profileEdit,
     {
       start: statement.getStart(tree),
-      text: `${MARKER}\nrequire('./modelPatch/desktop').install(() => require('./languageServer').getLsPort());\n`,
+      text: `${MARKER}\n${updatePolicy}require('./modelPatch/desktop').install(() => require('./languageServer').getLsPort());\n`,
     },
   ]);
 }
@@ -256,9 +268,9 @@ function patchPreload(vendorBytes, augmentations) {
  * Buffer/string contents. Vendor paths are archive-relative; build paths are
  * relative to dist. The caller separately copies its build into dist/modelPatch.
  */
-export function planRuntimePatch(readVendorFile, readBuildFile) {
+export function planRuntimePatch(readVendorFile, readBuildFile, cloneUserDataDir) {
   return new Map([
-    ['dist/main.js', patchMain(readInput(readVendorFile, 'dist/main.js'))],
+    ['dist/main.js', patchMain(readInput(readVendorFile, 'dist/main.js'), cloneUserDataDir)],
     ['dist/languageServer.js', patchLanguageServer(readInput(readVendorFile, 'dist/languageServer.js'))],
     [
       'dist/preload.js',

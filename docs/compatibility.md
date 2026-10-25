@@ -79,6 +79,25 @@ preserves vendor files, builds and verifies a candidate before replacement,
 and restores the previous files if a replacement fails. Legacy `.backup` and
 `.bak` files are not automatically restored.
 
+## macOS: 원본을 보존하는 로컬 서명 복제본
+
+`/Applications/Antigravity.app`을 수정하면 Google 서명이 깨져 macOS가 손상된 앱으로 판단한다. `scripts/macos-clone.mjs`는 원본을 읽기만 하고 별도 `.app`을 만든 뒤 복제본만 **ad-hoc** 서명한다. 이는 파일 무결성을 확인하는 로컬 서명이며 Google 서명이나 Apple 공증이 아니다.
+
+각 번들의 기존 entitlements(앱에 허용된 권한)는 보존한다. 다만 로컬 서명에는 Google Team ID가 없으므로 복제본의 hardened runtime(불러오는 코드 등을 추가 검사하는 macOS 보호 옵션) 플래그는 제외한다. 원본이나 전역 Gatekeeper·SIP를 바꾸거나 격리 표시를 제거하지 않으며 키체인 접근 승인을 우회하지 않는다. 복제본의 보안 속성이 원본과 완전히 같은 것은 아니다.
+
+```sh
+node scripts/macos-clone.mjs inspect
+node scripts/macos-clone.mjs prepare --target "$HOME/Applications/Antigravity Gateway.app"
+node scripts/macos-clone.mjs verify  --target "$HOME/Applications/Antigravity Gateway.app"
+node scripts/macos-clone.mjs restore --target "$HOME/Applications/Antigravity Gateway.app"
+```
+
+복제본에는 별도 bundle identifier(`<original>.gateway-local`)와 Electron 사용자 데이터 경로가 적용된다. 기본 경로는 `~/Library/Application Support/Antigravity Gateway`이며, `prepare --profile /절대/경로`로 바꿀 수 있다. 경로를 복제본에 기록하므로 이후에는 Finder로 바로 열면 된다. 원본·복제본 내부를 프로필 경로로 지정하면 거절한다. Electron 프로필 분리가 Google의 프로젝트·대화 저장소까지 완전히 분리한다는 뜻은 아니다.
+
+복제본은 원본 초기화가 끝나는 검증된 시작 지점에서 업데이트 확인 함수 `checkForUpdates`와 `checkForUpdatesAndNotify`를 비활성화하고, 업데이트 캐시 이름을 복제본 bundle identifier로 분리한다. 가짜 업데이트 주소를 사용하지 않는다. 원본 앱은 계속 스스로 업데이트할 수 있으며, `verify`가 `sourceChanged`를 보고하면 호환성을 다시 검사하고 복제본을 수동 교체한다. `prepare`는 기존 경로를 덮어쓰지 않는다. `restore`는 소유권이 확인된 복제본과 `.clone.json`만 제거하며 원본과 사용자 프로필은 남긴다.
+
+macOS arm64의 독립 App 2.26.0에서 실제 실행·기본 모델 목록 선택·AI Studio 구독 모델 응답을 확인했다. 실행 후에도 서명·entitlements 검증이 통과하고 원본 해시는 변경되지 않았다. 다른 버전이나 배포 환경의 공증 통과를 보장하는 결과는 아니다. Custom Models 저장 후 기본 목록이 갱신되지 않으면 앱을 종료 후 다시 연다.
+
 ## Install, check, and restore
 
 Use Node.js **22.12.0 or newer** (required by the pinned ASAR tool), then:
@@ -100,9 +119,9 @@ All platform wrappers accept the same arguments:
 ```
 
 ```sh
-# macOS standalone desktop agent
+# macOS standalone desktop agent: --check only. Patching a signed .app in place is
+# refused (MACOS_SIGNED_BUNDLE); use the separate signed clone below instead.
 bash deploy.sh --check --resources "/Applications/Antigravity.app"
-bash deploy.sh --resources "/Applications/Antigravity.app"
 
 # Linux
 bash deploy_linux.sh --check --resources /opt/antigravity/resources

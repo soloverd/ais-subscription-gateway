@@ -2,6 +2,10 @@
 
 Release history preserved from the project README. Historical entries describe the behavior of their release; see [compatibility and recovery](docs/compatibility.md) for current installation guidance.
 
+### Unreleased — macOS signed clone
+
+- 서명된 macOS 원본 `.app` 직접 패치를 `MACOS_SIGNED_BUNDLE`로 거절한다. `scripts/macos-clone.mjs`의 `inspect|prepare|verify|restore`는 원본을 읽기만 하고 별도 복제본을 로컬 서명한다. 기존 entitlements는 보존하되 복제본의 hardened runtime 플래그는 제외한다. 별도 bundle identifier·프로필(`--profile`)·업데이트 캐시를 사용하고, 검증된 시작 지점에서 업데이트 확인을 비활성화해 수동 교체한다. 복구는 소유권이 확인된 복제본과 manifest만 삭제한다. macOS arm64 App 2.26.0에서 실제 구독 모델 응답 및 실행 후 원본 무변경을 확인했다. [호환성·복구 안내](docs/compatibility.md) 참고.
+
 ### Unreleased — Automatic workspace artifact metadata correction
 
 - Prevent custom models from classifying ordinary workspace files as artifacts by sending optional `ArtifactMetadata`. Use the current native IDE workspace paths, artifact directory and tool schema to remove the misplaced field before execution, without changing the requested path, contents or overwrite setting. Genuine artifact calls and ambiguous/custom contexts remain unchanged.

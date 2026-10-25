@@ -67,6 +67,15 @@ function fail(code, message) {
   error.code = code;
   throw error;
 }
+// 서명된 macOS .app 번들(Contents/_CodeSignature 존재)은 제자리 수정 시 서명이 깨져 '손상됨'으로 표시된다.
+function isSignedMacBundle(resources) {
+  const contents = path.dirname(resources);
+  return (
+    path.basename(resources) === 'Resources' &&
+    path.basename(contents) === 'Contents' &&
+    exists(path.join(contents, '_CodeSignature'))
+  );
+}
 function exists(target) {
   try {
     fs.lstatSync(target);
@@ -112,7 +121,7 @@ function hashFile(filename) {
   }
   return hash.digest('hex');
 }
-function walk(root, relative = '') {
+export function walk(root, relative = '') {
   const result = [];
   for (const name of fs.readdirSync(path.join(root, relative)).sort()) {
     const item = relative ? `${relative}/${name}` : name;
@@ -122,7 +131,7 @@ function walk(root, relative = '') {
   }
   return result;
 }
-function hashDirectory(directory) {
+export function hashDirectory(directory) {
   if (!exists(directory)) return null;
   // macOS may expose /private/var through /var, and user-supplied parent paths
   // may have aliases too. Compare resolved link targets to a resolved root.
@@ -329,9 +338,12 @@ export function preflight(options = {}) {
       vendorFiles = locations(verifyBackup(resources, state));
       info = inspectArchive(vendorFiles.archive);
     }
+    if (options.signedBundleClone && !path.isAbsolute(options.cloneUserDataDir || ''))
+      fail('CLONE_PROFILE_REQUIRED', '복제본 전용 사용자 데이터 경로가 필요합니다.');
     runtimePatch = planRuntimePatch(
       (name) => extractFile(vendorFiles.archive, name),
       (name) => fs.readFileSync(path.join(dist, name)),
+      options.signedBundleClone ? options.cloneUserDataDir : undefined,
     );
   }
   const plan = options.restore ? null : binaryPlan(resources, options.patchLanguageServer);
@@ -489,6 +501,12 @@ export async function deploy(options = {}, operations = {}) {
   if (options.check)
     return { action: 'check', resources: info.resources, version: info.version, binaryMode: info.plan?.mode };
   const { resources, files, state, current } = info;
+  // 복원(restore)은 원본 바이트를 되돌리므로 허용한다. 새 패치만 복제본 경로로 강제한다.
+  if (!options.restore && !options.signedBundleClone && isSignedMacBundle(resources))
+    fail(
+      'MACOS_SIGNED_BUNDLE',
+      'Refusing to patch a signed macOS .app in place: it would invalidate the vendor signature. Use scripts/macos-clone.mjs prepare to patch a separate, locally re-signed clone.',
+    );
   const meta = path.join(resources, STATE_DIR);
   assertNoLinks(resources, meta);
   fs.mkdirSync(meta, { recursive: true });
