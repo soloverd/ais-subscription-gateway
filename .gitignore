@@ -1,0 +1,14 @@
+# 기본 전체 제외, 승인된 파일만 allowlist
+*
+!.gitignore
+!README.ko.md
+!HANDOFF.md
+!관리 대시보드.webloc
+!bin/
+bin/*
+!bin/prepare-services.mjs
+!bin/install-services.sh
+!bin/install-browser-host.sh
+!bin/build.sh
+!bin/check.mjs
+!bin/start.sh
