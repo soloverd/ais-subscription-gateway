@@ -1,8 +1,14 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { GOOGLE_NATIVE_SCOPES, resolveGoogleNativeClient } from '../googleNativeClient';
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof fs>();
+  return { ...actual, lstatSync: vi.fn(actual.lstatSync) };
+});
+const originalLstat = vi.mocked(fs.lstatSync).getMockImplementation()!;
 
 const temporary: string[] = [];
 const clientId = 'fixture-personal.apps.googleusercontent.com';
@@ -14,6 +20,7 @@ function directory(): string {
   return root;
 }
 afterEach(() => {
+  vi.mocked(fs.lstatSync).mockImplementation(originalLstat);
   for (const root of temporary.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 function fixture(resources = directory()) {
@@ -70,6 +77,14 @@ describe('native Antigravity public OAuth profile', () => {
           ? path.join(home, 'Applications/Antigravity IDE.app/Contents/Resources')
           : path.join(home, '.local/share/antigravity-ide/resources');
     fixture(resources);
+    // 실제 Mac의 설치본 대신 임시 사용자 폴더만 탐색해 실행 환경의 영향을 없앤다.
+    vi.mocked(fs.lstatSync).mockImplementation((filename) => {
+      const candidate = String(filename);
+      if (candidate !== home && !home.startsWith(candidate + path.sep) && !candidate.startsWith(home + path.sep)) {
+        throw new Error('테스트 사용자 폴더 밖의 설치본');
+      }
+      return originalLstat(filename);
+    });
     expect(
       resolveGoogleNativeClient({
         platform,
