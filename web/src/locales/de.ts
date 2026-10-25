@@ -1161,6 +1161,8 @@ export const messages: Record<TranslationKey, string> = {
   'error.account_busy':
     'Das Konto bearbeitet gerade eine Anfrage. Versuchen Sie es gleich noch einmal',
   'error.account_exists': 'Das Konto existiert bereits',
+  'error.gui_session_required':
+    'Für den Anmelde-Browser ist eine Mac-Benutzersitzung nötig. Melden Sie sich am Mac an und versuchen Sie es erneut. Gespeicherte Konten und das Dashboard funktionieren weiterhin',
   'error.signed_out': 'Die Cookies sind nicht bei AI Studio angemeldet oder abgelaufen',
   'error.account_required':
     'Kein nutzbares Konto. Fügen Sie zuerst ein Konto hinzu oder aktivieren Sie eines',

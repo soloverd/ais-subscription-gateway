@@ -1074,6 +1074,8 @@ export const messages = {
   'error.account_not_found': '账户不存在',
   'error.account_busy': '账户正在处理请求，请稍后再试',
   'error.account_exists': '账户已存在',
+  'error.gui_session_required':
+    '需要 Mac 用户登录会话才能打开登录浏览器，请先登录 Mac 后重试；已保存账户的调用与控制台不受影响',
   'error.signed_out': 'Cookie 未登录 AI Studio 或已失效',
   'error.account_required': '没有可用账户，请先添加或启用账户',
   'error.request_not_found': '请求不存在或已结束',

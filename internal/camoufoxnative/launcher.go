@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/proxydial"
@@ -32,6 +34,8 @@ type browserProcessTerminator func(context.Context, *browserProcess) error
 
 type browserProcess struct {
 	command *exec.Cmd
+	// host 는 사용자 세션의 브라우저 호스트가 띄운 브라우저와의 연결이며, 이 경우 command 는 nil 이다
+	host    net.Conn
 	done    chan struct{}
 	waitErr error
 	profile string
@@ -130,36 +134,69 @@ func launchBrowser(ctx context.Context, options Options, config map[string]any) 
 		return nil, "", err
 	}
 
+	// 이 시점부터 relay 와 가상 디스플레이의 정리는 브라우저 시작 함수가 맡는다
+	launched = true
+	cleanup := func() {
+		if relay != nil {
+			_ = relay.Close()
+		}
+		if display != nil {
+			stopVirtualDisplay(display)
+		}
+	}
+	timeout := options.ReadyTimeout
+	if timeout <= 0 {
+		timeout = 45 * time.Second
+	}
+	if socket := hostSocketPath(); socket != "" && options.liveView {
+		request := hostRequest{Executable: options.ExecutablePath, Profile: profile, Config: config}
+		return launchBrowserOnHost(ctx, socket, request, profile, profileLock, timeout, cleanup)
+	}
+	command := exec.Command(options.ExecutablePath, browserArguments(options.Headless, profile)...)
+	command.Env = environment
+	configureBrowserProcess(command, options.Headless)
+	return startBrowserCommand(ctx, command, profile, profileLock, options.Log, timeout, cleanup)
+}
+
+// browserArguments 는 Camoufox 실행 인자를 반환한다
+func browserArguments(headless bool, profile string) []string {
 	arguments := []string{"--remote-debugging-port=0"}
-	if options.Headless {
+	if headless {
 		arguments = append(arguments, "-no-remote", "-headless")
 	} else {
 		arguments = append(arguments, "-wait-for-browser")
 	}
-	arguments = append(arguments, "-profile", profile)
-	command := exec.Command(options.ExecutablePath, arguments...)
-	command.Env = environment
-	configureBrowserProcess(command, options.Headless)
+	return append(arguments, "-profile", profile)
+}
+
+// startBrowserCommand 는 브라우저 명령을 시작하고 BiDi 엔드포인트를 기다린다.
+// profile 이 비어 있지 않으면 종료 때 삭제하며, cleanup 은 시작 실패 또는 프로세스 종료 뒤 정확히 한 번 호출된다
+func startBrowserCommand(
+	ctx context.Context, command *exec.Cmd, profile string, profileLock *flock.Flock, mirror io.Writer, timeout time.Duration, cleanup func(),
+) (*browserProcess, string, error) {
+	fail := func(err error) (*browserProcess, string, error) {
+		if profile != "" {
+			_ = removeProfile(profile, profileLock)
+		}
+		cleanup()
+		return nil, "", err
+	}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
-		_ = removeProfile(profile, profileLock)
-		return nil, "", err
+		return fail(err)
 	}
 	stderr, err := command.StderrPipe()
 	if err != nil {
-		_ = removeProfile(profile, profileLock)
-		return nil, "", err
+		return fail(err)
 	}
 	if err := command.Start(); err != nil {
-		_ = removeProfile(profile, profileLock)
-		return nil, "", fmt.Errorf("启动 Camoufox: %w", err)
+		return fail(fmt.Errorf("启动 Camoufox: %w", err))
 	}
 	tree, err := attachBrowserProcess(command)
 	if err != nil {
 		_ = command.Process.Kill()
 		_ = command.Wait()
-		_ = removeProfile(profile, profileLock)
-		return nil, "", fmt.Errorf("绑定 Camoufox 进程: %w", err)
+		return fail(fmt.Errorf("绑定 Camoufox 进程: %w", err))
 	}
 	process := &browserProcess{
 		command: command,
@@ -168,24 +205,17 @@ func launchBrowser(ctx context.Context, options Options, config map[string]any) 
 		lock:    profileLock,
 		tree:    tree,
 	}
-	launched = true
 	go func() {
 		waitErr := command.Wait()
-		if relay != nil {
-			_ = relay.Close()
-		}
-		if display != nil {
-			stopVirtualDisplay(display)
-		}
+		cleanup()
 		process.mu.Lock()
 		process.waitErr = waitErr
 		process.mu.Unlock()
 		close(process.done)
 	}()
 	endpoints := make(chan string, 2)
-	go scanBrowserOutput(stdout, options.Log, endpoints)
-	go scanBrowserOutput(stderr, options.Log, endpoints)
-	timeout := options.ReadyTimeout
+	go scanBrowserOutput(stdout, mirror, endpoints)
+	go scanBrowserOutput(stderr, mirror, endpoints)
 	if timeout <= 0 {
 		timeout = 45 * time.Second
 	}
@@ -202,7 +232,7 @@ func launchBrowser(ctx context.Context, options Options, config map[string]any) 
 		if err == nil {
 			err = errors.New("Camoufox 在报告 BiDi 端点前退出")
 		}
-		return nil, "", err
+		return nil, "", startupExitError(err)
 	case <-timer.C:
 		_ = process.Close()
 		return nil, "", fmt.Errorf("等待 Camoufox BiDi 端点超时: %s", timeout)
@@ -212,8 +242,23 @@ func launchBrowser(ctx context.Context, options Options, config map[string]any) 
 	}
 }
 
+// startupExitError 는 macOS 에서 Camoufox 가 창 시스템 등록 단계에서 SIGABRT 로 종료된 경우를 사용자 세션 필요 오류로 바꾼다.
+// 로그인 세션 밖(LaunchDaemon 등)에서 띄운 브라우저는 headless 여도 이 단계에서 중단된다
+func startupExitError(err error) error {
+	var exit *exec.ExitError
+	if runtime.GOOS == "darwin" && errors.As(err, &exit) {
+		if status, ok := exit.Sys().(syscall.WaitStatus); ok && status.Signaled() && status.Signal() == syscall.SIGABRT {
+			return &SessionRequiredError{Reason: "Camoufox 가 macOS 창 시스템에 연결하지 못해 종료되었습니다 (서비스가 사용자 로그인 세션 밖에서 실행 중이면 " + HostSocketEnv + " 로 사용자 세션의 브라우저 호스트를 지정하세요)"}
+		}
+	}
+	return err
+}
+
 // Close 关闭 Camoufox 并删除隔离 profile
 func (process *browserProcess) Close() error {
+	if process != nil && process.host != nil {
+		return process.close(browserProcessCloseTimeout, terminateBrowserHost)
+	}
 	return process.close(browserProcessCloseTimeout, terminateBrowserProcess)
 }
 
@@ -238,7 +283,9 @@ func (process *browserProcess) close(timeout time.Duration, terminate browserPro
 	case <-closeCtx.Done():
 		closeErr = errors.Join(closeErr, fmt.Errorf("等待 Camoufox 进程退出: %w", closeCtx.Err()))
 	}
-	closeErr = errors.Join(closeErr, removeProfile(process.profile, process.lock))
+	if process.profile != "" {
+		closeErr = errors.Join(closeErr, removeProfile(process.profile, process.lock))
+	}
 	if closeErr != nil {
 		return closeErr
 	}

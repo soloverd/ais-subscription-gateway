@@ -60,7 +60,8 @@ func (s *server) handleLoginView(w http.ResponseWriter, r *http.Request) {
 
 // loginView 返回登录请求使用的 LiveView；请求没有登录窗口 ID 或使用本机可见窗口时返回 nil
 func (s *server) loginView(r *http.Request, id string) (*camoufoxnative.LiveView, func()) {
-	if id == "" || !liveLogin(r, camoufoxnative.HasDisplay()) {
+	// 브라우저 호스트가 설정되면 서비스가 사용자 세션 밖에서 실행 중일 수 있으므로, 본기기 요청도 서버 화면 대신 관리 페이지 로그인 창을 쓴다
+	if id == "" || !liveLogin(r, camoufoxnative.HasDisplay() && !camoufoxnative.HostConfigured()) {
 		return nil, func() {}
 	}
 	return s.loginViews.acquire(id)

@@ -74,6 +74,9 @@ func runCommand(args []string, logs *logOutput, executable string) (restart bool
 	if len(args) != 0 && args[0] == "setup" {
 		return false, setup.Run(ctx, cfg, args[1:])
 	}
+	if len(args) == 1 && args[0] == "browser-host" {
+		return false, runBrowserHost(ctx)
+	}
 	options, err := parseFlags(args, &cfg)
 	if err != nil {
 		return false, err
@@ -156,6 +159,7 @@ func parseFlags(args []string, cfg *config.Config) (commandOptions, error) {
 	flags.Usage = func() {
 		fmt.Fprintln(flags.Output(), "首次配置: aistudio2api setup")
 		fmt.Fprintln(flags.Output(), "日常启动: aistudio2api [参数]")
+		fmt.Fprintln(flags.Output(), "사용자 세션 브라우저 호스트: aistudio2api browser-host (CAMOUFOX_HOST_SOCKET 필요)")
 		flags.PrintDefaults()
 	}
 	authStates := flags.String("auth", cfg.AuthStates, "账户状态文件、目录或逗号分隔的多个路径")

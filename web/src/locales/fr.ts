@@ -1162,6 +1162,8 @@ export const messages: Record<TranslationKey, string> = {
   'error.account_not_found': 'Ce compte n’existe pas',
   'error.account_busy': 'Le compte traite une requête. Réessayez dans un instant',
   'error.account_exists': 'Ce compte existe déjà',
+  'error.gui_session_required':
+    'Une session utilisateur Mac est nécessaire pour ouvrir le navigateur de connexion. Connectez-vous au Mac, puis réessayez. Les comptes enregistrés et le tableau de bord continuent de fonctionner',
   'error.signed_out': 'Les cookies ne sont pas connectés à AI Studio ou ont expiré',
   'error.account_required': 'Aucun compte utilisable. Ajoutez ou activez d’abord un compte',
   'error.request_not_found': 'La requête n’existe pas ou est déjà terminée',

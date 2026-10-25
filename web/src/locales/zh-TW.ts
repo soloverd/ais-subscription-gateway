@@ -1077,6 +1077,8 @@ export const messages: Record<TranslationKey, string> = {
   'error.account_not_found': '帳號不存在',
   'error.account_busy': '帳號正在處理請求，請稍後再試',
   'error.account_exists': '帳號已存在',
+  'error.gui_session_required':
+    '需要 Mac 使用者登入工作階段才能開啟登入瀏覽器，請先登入 Mac 後重試；已儲存帳號的呼叫與控制台不受影響',
   'error.signed_out': 'Cookie 未登入 AI Studio 或已失效',
   'error.account_required': '沒有可用的帳號，請先新增或啟用帳號',
   'error.request_not_found': '請求不存在或已結束',

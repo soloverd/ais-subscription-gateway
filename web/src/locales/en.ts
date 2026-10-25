@@ -1132,6 +1132,8 @@ export const messages: Record<TranslationKey, string> = {
   'error.account_not_found': 'The account does not exist',
   'error.account_busy': 'The account is handling a request. Try again shortly',
   'error.account_exists': 'The account already exists',
+  'error.gui_session_required':
+    'A Mac user session is required to open the sign-in browser. Sign in to the Mac, then try again. Saved accounts and the dashboard keep working',
   'error.signed_out': 'The cookies are not signed in to AI Studio or have expired',
   'error.account_required': 'No usable account. Add or enable an account first',
   'error.request_not_found': 'The request does not exist or has finished',

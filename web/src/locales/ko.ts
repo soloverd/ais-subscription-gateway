@@ -1121,6 +1121,8 @@ export const messages: Record<TranslationKey, string> = {
   'error.account_not_found': '계정이 없습니다',
   'error.account_busy': '계정이 요청을 처리하는 중입니다. 잠시 후 다시 시도하세요',
   'error.account_exists': '이미 있는 계정입니다',
+  'error.gui_session_required':
+    'Mac 사용자 로그인 세션이 있어야 로그인 브라우저를 열 수 있습니다. Mac에 로그인한 뒤 다시 시도하세요. 저장된 계정 호출과 대시보드는 계속 동작합니다',
   'error.signed_out': 'Cookie가 AI Studio에 로그인되어 있지 않거나 만료되었습니다',
   'error.account_required':
     '사용할 수 있는 계정이 없습니다. 먼저 계정을 추가하거나 사용 설정하세요',

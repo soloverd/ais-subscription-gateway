@@ -1132,6 +1132,8 @@ export const messages: Record<TranslationKey, string> = {
   'error.account_busy':
     'アカウントがリクエストを処理中です。しばらくしてからもう一度お試しください',
   'error.account_exists': 'アカウントはすでに存在します',
+  'error.gui_session_required':
+    'ログイン用ブラウザを開くには Mac のユーザーセッションが必要です。Mac にログインしてから再試行してください。保存済みアカウントの呼び出しとダッシュボードは引き続き動作します',
   'error.signed_out': 'Cookie で AI Studio にログインしていないか、期限切れです',
   'error.account_required':
     '利用できるアカウントがありません。先にアカウントを追加するか有効にしてください',
