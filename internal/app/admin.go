@@ -886,6 +886,7 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 		WarmStartupConcurrency: value.WarmStartupConcurrency,
 		PerAccountConcurrency:  value.PerAccountConcurrency,
 		RoutingStrategy:        value.RoutingStrategy,
+		AccountOrder:           saved.AccountOrder, // Preserve env-only ordering on UI saves.
 		UpstreamChannels:       value.UpstreamChannels,
 		ModelMapping:           strings.TrimSpace(value.ModelMapping),
 		ModelChannels:          strings.TrimSpace(value.ModelChannels),
@@ -901,6 +902,7 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 		return api.RuntimeConfig{}, err
 	}
 	admin.pool.SetRoutingStrategy(cfg.RoutingStrategy)
+	admin.pool.SetAccountOrder(cfg.AccountOrder)
 	admin.pool.SetModelChannels(modelChannels(cfg.ModelChannels))
 	admin.requests.log("service", "INFO", "服务配置已保存")
 	if models, err := admin.CatalogModels(context.Background()); err == nil {

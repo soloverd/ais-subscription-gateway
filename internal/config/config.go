@@ -40,6 +40,7 @@ var configKeys = [...]string{
 	"WARM_STARTUP_CONCURRENCY",
 	"PER_ACCOUNT_CONCURRENCY",
 	"ROUTING_STRATEGY",
+	"ACCOUNT_ORDER",
 	"UPSTREAM_CHANNELS",
 	"MODEL_MAPPING",
 	"MODEL_CHANNELS",
@@ -103,6 +104,7 @@ type Config struct {
 	WarmStartupConcurrency int           `json:"warm_startup_concurrency"`
 	PerAccountConcurrency  int           `json:"per_account_concurrency"`
 	RoutingStrategy        string        `json:"routing_strategy"`
+	AccountOrder           []string      `json:"account_order"`
 	UpstreamChannels       []string      `json:"upstream_channels"`
 	ModelMapping           string        `json:"model_mapping"`
 	ModelChannels          string        `json:"model_channels"`
@@ -263,6 +265,9 @@ func Load(path string) (Config, error) {
 	if value, ok := values["ROUTING_STRATEGY"]; ok {
 		cfg.RoutingStrategy = strings.TrimSpace(value)
 	}
+	if value, ok := values["ACCOUNT_ORDER"]; ok {
+		cfg.AccountOrder = ParseAccountOrder(value)
+	}
 	if value, ok := values["UPSTREAM_CHANNELS"]; ok {
 		cfg.UpstreamChannels = ParseUpstreamChannels(value)
 	}
@@ -322,6 +327,7 @@ func (c Config) Save(path string) error {
 		"WARM_STARTUP_CONCURRENCY": strconv.Itoa(c.WarmStartupConcurrency),
 		"PER_ACCOUNT_CONCURRENCY":  strconv.Itoa(c.PerAccountConcurrency),
 		"ROUTING_STRATEGY":         c.RoutingStrategy,
+		"ACCOUNT_ORDER":            strings.Join(c.AccountOrder, ","),
 		"UPSTREAM_CHANNELS":        strings.Join(c.UpstreamChannels, ","),
 		"MODEL_MAPPING":            c.ModelMapping,
 		"MODEL_CHANNELS":           c.ModelChannels,
@@ -515,6 +521,7 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		WarmStartupConcurrency int      `json:"warm_startup_concurrency"`
 		PerAccountConcurrency  int      `json:"per_account_concurrency"`
 		RoutingStrategy        string   `json:"routing_strategy"`
+		AccountOrder           []string `json:"account_order"`
 		UpstreamChannels       []string `json:"upstream_channels"`
 		ModelMapping           string   `json:"model_mapping"`
 		ModelChannels          string   `json:"model_channels"`
@@ -546,6 +553,7 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		WarmStartupConcurrency: c.WarmStartupConcurrency,
 		PerAccountConcurrency:  c.PerAccountConcurrency,
 		RoutingStrategy:        c.RoutingStrategy,
+		AccountOrder:           c.AccountOrder,
 		UpstreamChannels:       c.UpstreamChannels,
 		ModelMapping:           c.ModelMapping,
 		ModelChannels:          c.ModelChannels,
@@ -582,6 +590,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		WarmStartupConcurrency int      `json:"warm_startup_concurrency"`
 		PerAccountConcurrency  int      `json:"per_account_concurrency"`
 		RoutingStrategy        string   `json:"routing_strategy"`
+		AccountOrder           []string `json:"account_order"`
 		UpstreamChannels       []string `json:"upstream_channels"`
 		ModelMapping           string   `json:"model_mapping"`
 		ModelChannels          string   `json:"model_channels"`
@@ -626,6 +635,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		WarmStartupConcurrency: value.WarmStartupConcurrency,
 		PerAccountConcurrency:  value.PerAccountConcurrency,
 		RoutingStrategy:        value.RoutingStrategy,
+		AccountOrder:           ParseAccountOrder(strings.Join(value.AccountOrder, ",")),
 		UpstreamChannels:       value.UpstreamChannels,
 		ModelMapping:           strings.TrimSpace(value.ModelMapping),
 		ModelChannels:          strings.TrimSpace(value.ModelChannels),
@@ -825,4 +835,15 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 		return fmt.Errorf("替换配置: %w", err)
 	}
 	return nil
+}
+
+// ParseAccountOrder normalizes the optional fill-first preference list.
+func ParseAccountOrder(value string) []string {
+	var order []string
+	for id := range strings.SplitSeq(value, ",") {
+		if id = strings.TrimSpace(id); id != "" && !slices.Contains(order, id) {
+			order = append(order, id)
+		}
+	}
+	return order
 }

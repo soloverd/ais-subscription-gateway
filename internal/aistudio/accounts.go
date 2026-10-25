@@ -281,6 +281,7 @@ type AccountPool struct {
 	resources             map[string]string
 	perAccountConcurrency int
 	routingStrategy       string
+	accountOrder          map[string]int
 	lastPicked            map[string]string
 	lastPickedChannel     map[string]Channel
 	channels              []Channel
@@ -2786,7 +2787,7 @@ func (p *AccountPool) selectionIndicesLocked(selection AccountSelection) ([]int,
 		indices = append(indices, index)
 	}
 	sort.Slice(indices, func(left, right int) bool {
-		return p.accounts[indices[left]].ID < p.accounts[indices[right]].ID
+		return p.accountLessLocked(p.accounts[indices[left]].ID, p.accounts[indices[right]].ID)
 	})
 	if p.routingStrategy == "round-robin" {
 		last := p.lastPicked[selectionAccessScope(selection)]
@@ -3698,4 +3699,56 @@ func fileExists(filePath string) bool {
 func timePointer(value time.Time) *time.Time {
 	copy := value
 	return &copy
+}
+
+// SetAccountOrder sets fill-first preferences. Unlisted accounts retain ID order.
+// The list is a preference, not an eligibility allowlist.
+func (p *AccountPool) SetAccountOrder(order []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.accountOrder = make(map[string]int, len(order))
+	for _, id := range order {
+		id = strings.TrimSpace(id)
+		if _, exists := p.accountOrder[id]; id != "" && !exists {
+			p.accountOrder[id] = len(p.accountOrder)
+		}
+	}
+	p.notifyLocked()
+}
+
+func (p *AccountPool) accountLessLocked(left, right string) bool {
+	if p.routingStrategy == "fill-first" {
+		leftRank, leftListed := p.accountOrder[left]
+		rightRank, rightListed := p.accountOrder[right]
+		if leftListed != rightListed {
+			return leftListed
+		}
+		if leftListed && leftRank != rightRank {
+			return leftRank < rightRank
+		}
+	}
+	return left < right
+}
+
+// PreferredStandbyAccount returns a ready standby account outranking all available
+// warm accounts. Candidates must already be filtered for eligibility and capacity.
+// Empty order and round-robin preserve the original warm-first scheduling policy.
+func (p *AccountPool) PreferredStandbyAccount(standby, warm []string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.routingStrategy != "fill-first" || len(p.accountOrder) == 0 || len(standby) == 0 {
+		return ""
+	}
+	best := standby[0]
+	for _, id := range standby[1:] {
+		if p.accountLessLocked(id, best) {
+			best = id
+		}
+	}
+	for _, id := range warm {
+		if !p.accountLessLocked(best, id) {
+			return ""
+		}
+	}
+	return best
 }

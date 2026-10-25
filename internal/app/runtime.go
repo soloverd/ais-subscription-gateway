@@ -67,6 +67,7 @@ func newRuntime(
 	requests.log("service", "INFO", "运行时装配 | 3/3 | 创建协议客户端 | 出口="+egress)
 	pool := aistudio.NewAccountPool(accounts, cfg.PerAccountConcurrency)
 	pool.SetRoutingStrategy(cfg.RoutingStrategy)
+	pool.SetAccountOrder(cfg.AccountOrder)
 	pool.SetUpstreamChannels(upstreamChannels(cfg.UpstreamChannels))
 	pool.SetModelChannels(modelChannels(cfg.ModelChannels))
 	proxies := aistudio.NewProxyPool(pool, proxyList)
@@ -3072,7 +3073,17 @@ func (service *trackedService) acquireWarmLease(ctx context.Context, selection a
 		standbyReady, opening := service.workers.withoutOpening(groups.StandbyReady)
 		groups.StandbyReady = standbyReady
 		warmAvailable := append(append([]string(nil), groups.WarmReady...), groups.WarmAvailable...)
-		if len(warmAvailable) > 0 {
+		// Prefer a ready higher-ranked standby account when a worker slot can be
+		// obtained. Busy/cooling/auth-invalid primaries were excluded above and
+		// must not delay an available fallback. Do not override account pinning.
+		preferredStandby := ""
+		if !fixedAccount && (len(active) < service.workers.activeLimit() || service.workers.idleWarmVictim("") != "") {
+			preferredStandby = service.pool.PreferredStandbyAccount(groups.StandbyReady, warmAvailable)
+		}
+		if preferredStandby != "" {
+			groups.StandbyReady = []string{preferredStandby}
+		}
+		if len(warmAvailable) > 0 && preferredStandby == "" {
 			candidate := selection
 			candidate.AllowedAccountIDs = warmAvailable
 			lease, _, acquireErr := service.pool.TryAcquireFor(ctx, candidate)
@@ -3092,7 +3103,7 @@ func (service *trackedService) acquireWarmLease(ctx context.Context, selection a
 		warmCandidates := len(warmAvailable) + len(groups.WarmBusy)
 		coolingVictim := len(active) >= service.workers.activeLimit() &&
 			service.workers.idleWarmVictimFor("", selection.ModelID, true) != ""
-		if len(groups.StandbyReady) > 0 && (len(active) < service.workers.activeLimit() || coolingVictim) && warmCandidates > 0 && !fixedAccount {
+		if preferredStandby == "" && len(groups.StandbyReady) > 0 && (len(active) < service.workers.activeLimit() || coolingVictim) && warmCandidates > 0 && !fixedAccount {
 			standby := groups.StandbyReady
 			if cold := service.workers.coldAccounts(standby); len(cold) > 0 {
 				standby = cold
@@ -3104,7 +3115,7 @@ func (service *trackedService) acquireWarmLease(ctx context.Context, selection a
 			continue
 		}
 		if len(groups.StandbyReady) > 0 && (len(active) < service.workers.activeLimit() ||
-			warmCandidates == 0 && service.workers.idleWarmVictim("") != "") {
+			(warmCandidates == 0 || preferredStandby != "") && service.workers.idleWarmVictim("") != "") {
 			standby := groups.StandbyReady
 			if len(active) < service.workers.activeLimit() {
 				if cold := service.workers.coldAccounts(standby); len(cold) > 0 {

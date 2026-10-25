@@ -241,7 +241,7 @@ func (p *AccountPool) channelCandidatesLocked(indices []int, selection AccountSe
 	sort.SliceStable(candidates, func(left, right int) bool {
 		leftID, rightID := p.accounts[candidates[left].index].ID, p.accounts[candidates[right].index].ID
 		if leftID != rightID {
-			return leftID < rightID
+			return p.accountLessLocked(leftID, rightID)
 		}
 		return rank(candidates[left].channel) < rank(candidates[right].channel)
 	})

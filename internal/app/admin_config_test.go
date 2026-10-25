@@ -20,6 +20,7 @@ func TestAdminConfig(t *testing.T) {
 	cfg.AdminAuthEnabled = true
 	cfg.AdminUsername = "operator"
 	cfg.AdminPassword = "test-password"
+	cfg.AccountOrder = []string{"primary@example.com", "secondary@example.com"}
 	if err := cfg.Save(path); err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +47,9 @@ func TestAdminConfig(t *testing.T) {
 	saved, err := config.Load(path)
 	if err != nil || saved.AdminPassword != cfg.AdminPassword {
 		t.Fatalf("password changed: %v", err)
+	}
+	if strings.Join(saved.AccountOrder, ",") != strings.Join(cfg.AccountOrder, ",") {
+		t.Fatalf("UI save lost env-only account order: %v", saved.AccountOrder)
 	}
 	if !saved.AutoStart {
 		t.Fatal("auto_start was not saved")
