@@ -638,6 +638,8 @@ With `WAA_BACKEND=go`, WAA runs inside the service process, emulates the Firefox
 - 이 브랜치는 원본 `Mag1cFall/AIStudio2API` main(`669a207`)을 로컬 보존 기능과 합친 검증용 통합본이며, 운영본에는 아직 반영되지 않았다.
 - 로컬 기능(`ACCOUNT_ORDER` 계정 선호 순서, 브라우저 호스트, 한국어 오류·로그 번역)은 그대로 유지한다.
 - 로컬 `.env`, 인증 파일, 런타임 데이터 같은 secret은 저장소에 포함하지 않는다.
+- 통합 검증: 웹 의존성 설치와 프로덕션 빌드, Go `api/app/aistudio/config/camoufoxnative` 5개 패키지 테스트 및 CLI 빌드 통과. `waa/chromeauth`는 테스트 파일이 없어 컴파일만 확인했다.
+- 운영 인증정보 없이 임시 HOME·작업 폴더·별도 loopback 포트에서 Go 백엔드로 실행하여 `--help`, `/health` HTTP 200, 대시보드 HTML HTTP 200, SIGTERM 종료 코드 0을 확인했다. 임시 서버와 런타임 데이터는 정리했다. 실제 Google 로그인·모델 생성·영상 입력 실사용과 운영 배포는 확인하지 않았다.
 
 ### Limitations
 
