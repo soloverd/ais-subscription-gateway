@@ -633,6 +633,12 @@ Go handles encoding, scheduling, streaming decode, and public protocols. WAA-pro
 
 With `WAA_BACKEND=go`, WAA runs inside the service process, emulates the Firefox page environment from the account fingerprint, and sends requests with Firefox request headers; Camoufox is neither downloaded nor started at runtime. Browser login on the Accounts page still uses Camoufox and prepares it on first login.
 
+### 로컬 통합본 주의사항
+
+- 이 브랜치는 원본 `Mag1cFall/AIStudio2API` main(`669a207`)을 로컬 보존 기능과 합친 검증용 통합본이며, 운영본에는 아직 반영되지 않았다.
+- 로컬 기능(`ACCOUNT_ORDER` 계정 선호 순서, 브라우저 호스트, 한국어 오류·로그 번역)은 그대로 유지한다.
+- 로컬 `.env`, 인증 파일, 런타임 데이터 같은 secret은 저장소에 포함하지 않는다.
+
 ### Limitations
 
 - **Client-Managed History**: Clients submit complete conversation context for Chat, Anthropic, and Gemini requests
