@@ -112,7 +112,9 @@ Chrome 运行期间以排他锁打开 `Web Data`，程序把 `Web Data` 与 `Web
 
 设备绑定的账号 OAuthMultilogin 使用 `MultiOAuth` 头，`token_service.binding_key` 为空的账号使用 `MultiBearer <refresh token>:<Gaia ID>` 头，一次请求返回明文 Cookie。`MultiOAuth` 第一次 assertion 为 `DBSC_CHALLENGE_IF_REQUIRED`，响应提供 challenge；第二次 assertion 的 JWT header 使用 `ES256` 与 `DEVICE_BOUND_SESSION_CREDENTIALS_ASSERTION`。payload 绑定 Google OAuth client、challenge、设备公钥 issuer 和临时 HPKE 公钥。Cookie 密文使用 X25519、HKDF-SHA256 与 AES-128-GCM 解密。
 
-Chrome 导入状态在 `storage-state.json` 的 `aistudio2api` 扩展中保存来源、Gaia ID、refresh token 与 wrapped binding key。登录页跳转、签名 Cookie 失效、HTTP `401` 与协议 Code 16 进入同一认证恢复流程，覆盖 Worker 预热、按需启动、普通 RPC、受保护 RPC 与 Live 建连。服务优先在同一账户出口续签 Cookie；保存的 OAuth 材料被拒绝时，从当前 Chrome 匹配原账户邮箱与 Gaia ID，更新来源材料。没有 `aistudio2api` 扩展的账户在本机 Chrome 登录着同一邮箱时，从 Chrome 导入该邮箱的材料并写入扩展，此后按 Chrome 导入账户续签。有效 Cookie 提交后使动态头失效、关闭该账户 WAA runtime，并重放一次。恢复失败的账户标为 `auth_required`，管理事件同步发布账户状态，后续调度使用其他合格账户。
+OAuthMultilogin 以该 Profile 的 Chrome 身份发出，请求头与 Chrome `GaiaAuthFetcher` 相同：HTTP/2 下依次为 `content-length`、`authorization`、`content-type`、`sec-fetch-site: none`、`sec-fetch-mode: no-cors`、`sec-fetch-dest: empty`、`user-agent`、`accept-encoding: gzip, deflate, br, zstd`、`accept-language` 与 `priority: u=4, i`。`user-agent` 的主版本取 User Data 的 `Last Version`；`accept-language` 取 Profile `Preferences` 的 `intl.accept_languages`，没有该项时取 `intl.selected_languages`，按 Chromium 的规则在带地区的语言后补主语言并依次加 `q=0.9` 到 `q=0.1`。导入与续签都读取账户导入来源的 User Data 目录中当前的 Chrome 版本与该 Profile 的语言设置，来源没有记录目录时读取稳定版 Chrome 的默认目录。
+
+Chrome 导入状态在 `storage-state.json` 的 `aistudio2api` 扩展中保存来源（浏览器、User Data 目录、Profile 与邮箱）、Gaia ID、refresh token 与 wrapped binding key。登录页跳转、签名 Cookie 失效、HTTP `401` 与协议 Code 16 进入同一认证恢复流程，覆盖 Worker 预热、按需启动、普通 RPC、受保护 RPC 与 Live 建连。服务优先在同一账户出口续签 Cookie；保存的 OAuth 材料被拒绝时，从当前 Chrome 匹配原账户邮箱与 Gaia ID，更新来源材料。没有 `aistudio2api` 扩展的账户在本机 Chrome 登录着同一邮箱时，从 Chrome 导入该邮箱的材料并写入扩展，此后按 Chrome 导入账户续签。有效 Cookie 提交后使动态头失效、关闭该账户 WAA runtime，并重放一次。恢复失败的账户标为 `auth_required`，管理事件同步发布账户状态，后续调度使用其他合格账户。
 
 认证恢复等待同账户的正常请求结束；并发失效复用一次提交结果。替换登录材料推进认证代际，旧请求的认证结果按代际和请求顺序写回；生成正常结束后确认认证有效。HTTP `403`、协议 Code 7 与 Drive `unauthorized_client` 保留模型权限或 Drive 授权含义。隔离 Camoufox 登录和外部 storage state 在本机 Chrome 没有同一邮箱时只使用各自的登录材料。
 
@@ -306,6 +308,7 @@ field 1 是 `request_key`，field 2 是 `botguard_response`。正确 proof、损
 | 52 | thinking level | 53 | music route |
 | 54 | image search | 58 | Google Maps |
 | 59 | private Interaction route | 85 | TTS 分段说话人 |
+| 69 | Agentic 视频理解 | | |
 | 46 | Live 实时翻译 | 48 | Build 写代码助手可选 |
 
 未知能力码按原值保留为 `capability_code_<N>` 或 `secondary_capability_code_<N>`。
@@ -324,6 +327,7 @@ field 1 是 `request_key`，field 2 是 `botguard_response`。正确 proof、损
 | 52 | `thinking_level` | 53 | `music_route` |
 | 54 | `image_search` | 58 | `google_maps` |
 | 59 | `interaction_route` | 74 | `transcription_word_timestamps` |
+| 69 | `agentic_video` | | |
 | 76 | `transcription_language_codes` | 77 | `transcription_output` |
 | 80 | `transcription_speaker_labels` | 81 | `transcription_custom_vocabulary` |
 | 84 | `transcription_smart` | 85 | `speech_metadata` |
@@ -427,8 +431,12 @@ Content 形状：
 | 11 | 12 | function result `[name, Struct, callId?]` |
 | 12 | 13 | thought boolean |
 | 14 | 15 | thought signature |
+| 15 | 16 | 视频静态处理元数据 `[startOffset?, endOffset?, fps?]`；offset 为 `[seconds,nanos?]` |
 | 17 | 18 | 上传附件 `[mime, 上传路径, 文件名, 字节数]`，字节数为十进制字符串；用于 Build 写代码助手，见 [Build 通道](build.md) 第 8 节 |
 | 22 | 23 | transcription metadata `[text, speaker?, timestamp spans?]` |
+| 25 | 26 | 服务端媒体处理调用 `[13, name?, Struct?, callId?]` |
+| 26 | 27 | 服务端媒体处理结果 `[13, name?, Struct?, callId?]` |
+| 39 | 40 | 视频处理模式：`1` STATIC、`2` AGENTIC |
 
 system instruction：
 
@@ -1611,12 +1619,12 @@ message 字段为 `role`、`content`、可选 `name`、`tool_call_id`、`tool_ca
 | --- | --- |
 | `text`、`input_text`、`output_text` | `text` |
 | `image_url`、`input_image` | `image_url` string 或 `{"url":"..."}`；也可只给 `file_id` |
-| `video_url`、`input_video` | `video_url` string 或 `{"url":"..."}` |
+| `video_url`、`input_video` | `video_url` string 或 `{"url":"..."}`；也可只给 `file_id` |
 | `input_file`、`file` | `file_id`，或 `filename` + `file_data`；Chat `file` 的字段位于嵌套 `file` 对象 |
 | `input_audio` | `input_audio.data`、`input_audio.format` |
 | `refusal` | `refusal`，作为所在消息的文本 |
 
-OpenAI `image_url` / `input_image` 值为 data URL 时形成 inline data，值为 YouTube URL 时形成 external media，Gemini Files API 文件 URI 保持文件引用，其他 http(s) URL 由服务端下载后作为内联媒体发送，其他非 data 字符串按已上传 file ID 解析。data URL 接受 Base64 与百分号编码数据，省略 MIME 时按内容判断类型，MIME 参数不发送。同一请求内相同 URL 只下载一次；下载随请求取消，大小上限与内联媒体相同（512 MiB），MIME 取响应 `Content-Type`，缺失、无法解析或为 octet-stream 时按内容判断；URL 主机或任一重定向目标解析到本机、私网、链路本地、组播或未指定地址时不连接，按下载失败处理；下载失败返回 400，错误信息包含 URL 与原因。`video_url` / `input_video` 只接受 YouTube URL。`file_data` 接受 data URL 或 Base64 文件内容，没有声明 MIME 时按 `/v1/files` 的规则依次按文件内容与 `filename` 扩展名判断。
+OpenAI `image_url` / `input_image` 与 `video_url` / `input_video` 值为 data URL 时形成 inline data，值为 YouTube URL 时形成 external media，Gemini Files API 文件 URI 保持文件引用，其他 http(s) URL 由服务端下载后作为内联媒体发送，其他非 data 字符串按已上传 file ID 解析。data URL 接受 Base64 与百分号编码数据，省略 MIME 时按内容判断类型，MIME 参数不发送。同一请求内相同 URL 只下载一次；下载随请求取消，大小上限与内联媒体相同（512 MiB），MIME 取响应 `Content-Type`，缺失、无法解析或为 octet-stream 时按内容判断；URL 主机或任一重定向目标解析到本机、私网、链路本地、组播或未指定地址时不连接，按下载失败处理；下载失败返回 400，错误信息包含 URL 与原因。`file_data` 接受 data URL 或 Base64 文件内容，没有声明 MIME 时按 `/v1/files` 的规则依次按文件内容与 `filename` 扩展名判断。
 
 function tool 使用 `{"type":"function","function":{"name","description","parameters","strict"}}`。`strict:true` 启用参数契约校验。Google tool type 为 `web_search`、`web_search_preview`、`image_search`、`url_context`、`code_interpreter`、`google_maps`。custom tool `{"type":"custom","custom":{name,description,format}}` 声明为只有字符串参数 `input` 的函数，grammar 格式的语法与定义写入函数描述；调用以 `{"type":"custom","custom":{name,input}}` 返回，历史中的 custom 调用以 `{"input":<INPUT>}` 发送。历史函数调用的 `arguments` 不是 JSON object 时以 `{"_raw":"<原文>"}` 发送。
 
@@ -1702,7 +1710,7 @@ input item 字段为 `type`、`id`、`role`、`content`、`call_id`、`name`、`
 | `input_image` | `image_url` string 或 `{url}`；也可只给 `file_id` |
 | `input_file` | `file_id`、`file_url`，或 `filename` + `file_data` |
 | `input_audio` | `input_audio:{data,format}` |
-| `input_video` | `video_url` string 或 `{url}` |
+| `input_video` | `video_url` string 或 `{url}`；也可只给 `file_id` |
 | `refusal` | `refusal`，作为所在消息的文本 |
 
 Responses 的图片、视频与文件 Part 复用上述 data URL、file ID 与 YouTube 规则。
@@ -1967,6 +1975,7 @@ delta 联合类型为 `text_delta{text}`、`thinking_delta{thinking}`、`signatu
 | --- | --- |
 | `input` | 字符串、单个内容块、内容块数组或步骤数组；内容类型为 `text`、`image`、`audio`、`video`、`document` |
 | 媒体内容 | `data`（Base64）或 `uri`，可选 `mime_type` |
+| 视频处理 | `processing:"static"`、`"agentic"` 或 `{type:"static",start_offset?,end_offset?,fps?}`；offset 为带 `s` 的 Duration 字符串，例如 `"2.5s"` |
 | 输入步骤 | `user_input`、`model_output`、`thought`、`function_call`、`function_result`、`code_execution_call`、`code_execution_result` 与工具 call/result 步骤 |
 | `system_instruction` | 当前请求的系统指令 |
 | `generation_config` | `temperature`、`top_p`、`top_k`、`max_output_tokens`、`seed`、`stop_sequences`、`thinking_level`、`thinking_summaries`、`speech_config`、`tool_choice`、`image_config:{aspect_ratio?,image_size?}` |
@@ -1981,7 +1990,8 @@ delta 联合类型为 `text_delta{text}`、`thinking_delta{thinking}`、`signatu
 | 续接 | `previous_interaction_id`、`store` |
 
 - 媒体内容的 `data` 与 `uri` 二选一，复用 Gemini 文件与内联媒体解析：省略 `mime_type` 时内联数据按内容识别类型，无法识别时返回 `400 INVALID_ARGUMENT`；`uri` 为外部 http(s) URL 时由服务下载为内联媒体，规则与 GenerateContent 的 `fileData` 相同；本服务 Gemini 文件接口返回的 `uri` 作为文件引用
-- 函数结果通过 `call_id` 匹配历史调用，没有对应调用时使用自带的 `name`；`is_error:true` 的结果以 `{"error":<result>}` 发送上游；`code_execution_call` 与 `code_execution_result` 以代码块文本并入模型轮次；`google_search`、`url_context`、`google_maps`、`file_search`、`mcp_server_tool`、`retrieval`、`processing` 的 call 与 result 步骤不发送上游
+- 函数结果通过 `call_id` 匹配历史调用，没有对应调用时使用自带的 `name`；`is_error:true` 的结果以 `{"error":<result>}` 发送上游；`code_execution_call` 与 `code_execution_result` 以代码块文本并入模型轮次；`google_search`、`url_context`、`google_maps`、`file_search`、`mcp_server_tool`、`retrieval` 的 call 与 result 步骤不发送上游
+- `processing_call` 和 `processing_result` 保留服务端媒体处理调用的 `id`、对应的 `call_id` 与各自的 `signature`，作为模型历史续接；流式响应按 `step.start`、`step.delta`、`step.stop` 发布，签名位于 delta
 - 文本 `response_format` 带 `schema` 时请求结构化输出，`mime_type` 默认 `application/json`；不带 `type` 或 `type` 为 JSON Schema 类型的对象直接作为结构化输出 Schema；图片指定 `mime_type:"image/jpeg"` 时其他格式的图片输出转为 JPEG
 - `response_format` 中的图片比例、尺寸与文本 `mime_type` 优先于 `generation_config.image_config` 与 `response_mime_type`；`response_modalities` 中的其他取值返回 `400 INVALID_ARGUMENT`
 - `speech_config` 的 `language` 不发送上游，多说话人 `mode` 为 `verbatim` 或 `conversational`；`speech_metadata` 保留说话人与风格
@@ -2030,10 +2040,26 @@ Content 字段为 `role` 与 `parts`。Part oneof：
 | file data | `fileData:{mimeType?,fileUri,displayName}` |
 | function call | `functionCall:{id,name,args}` |
 | function response | `functionResponse:{id,name,response}` |
+| server media processing call | `toolCall:{id?,toolType:"MEDIA_PROCESSING",toolName?,args?}` |
+| server media processing response | `toolResponse:{id?,toolType:"MEDIA_PROCESSING",response?}` |
 | executable code | `executableCode:{language,code}` |
 | code result | `codeExecutionResult:{outcome,output,error}` |
 
 不含数据字段且没有 `thoughtSignature` 的 Part 不发送；同一 Part 含多个数据字段时返回 `400 INVALID_ARGUMENT`。`fileData.fileUri` 为 YouTube 链接时作为外部视频，为本服务 `/upload/v1beta/files` 返回的文件 URI 或 `/v1/files` 文件 ID 时作为文件引用，为其他 http(s) URL 时由服务下载为内联媒体；其他 Gemini Files API URI 不下载。外部 URL 在同一请求内只下载一次，上限 512 MiB，MIME 依次取响应 `Content-Type`、`mimeType` 与内容识别；主机或任一重定向目标解析到本机、私网、链路本地、组播或未指定地址时不连接，按下载失败处理；下载失败返回带 URL 与原因的 `400 INVALID_ARGUMENT`。`:countTokens` 同样先下载外部 URL 再计数。
+
+视频 Part 可设置 `mediaProcessing` 为 `STATIC`、`AGENTIC` 或 `MEDIA_PROCESSING_UNSPECIFIED`。省略时沿用模型默认处理方式。`AGENTIC` 使用模型目录的 `agentic_video` 能力，并返回 `toolType:"MEDIA_PROCESSING"` 的服务端 `toolCall` 与 `toolResponse`；调用标识与 `thoughtSignature` 随完整模型 Part 一起用于下一轮历史。
+
+静态视频的 `videoMetadata` 可设置 `startOffset`、`endOffset` 与 `fps`，与该 Part 的视频附件一起参与生成及 token 计数。offset 为非负秒数 Duration 字符串，支持最多九位小数，例如 `"2.5s"`；显式 `"0s"` 保留起点，终点须晚于起点。FPS 范围为 `(0,24]`，静态参数与 `AGENTIC` 互斥。例如：
+
+```json
+{
+  "fileData": {"mimeType":"video/*","fileUri":"https://www.youtube.com/watch?v=<VIDEO_ID>"},
+  "mediaProcessing": "STATIC",
+  "videoMetadata": {"startOffset":"2s","endOffset":"4s","fps":0.5}
+}
+```
+
+这些参数与媒体处理历史适用于上游使用 GenerateContent 的模型；使用原生 CreateInteractionStream 或 CreateInteraction 的模型收到这些参数时返回参数错误。
 
 `generationConfig` 全字段：
 
