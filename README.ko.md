@@ -80,8 +80,18 @@ Mac 사용자 세션이 없으면 새 Google 로그인은 할 수 없으며, 웹
 2026-10-26 사용자 승인으로 운영 루트와 두 소스 저장소를 별도로 보존했습니다. 원격 푸시나 서비스 재설치는 하지 않았습니다.
 
 - 운영 루트: `local/operations-preservation`. `.gitignore`에 명시한 운영 스크립트와 문서만 추적합니다. `service/`, 도구체인, 빌드 산출물과 중첩 소스 저장소는 제외합니다. 새 파일은 검토 후 허용 목록에 추가해야 합니다.
-- `upstream/`: `local/preserve-implemented-work`, 보존 기준 `25d264b` (계정 우선순위 `415700d` 포함). 소유권 미확인 일반 번역 15개 파일은 미커밋 상태로 유지했습니다. 따라서 현재 운영 파일 전체가 이 커밋과 일치하는 것은 아닙니다.
+- `upstream/`: `local/preserve-implemented-work`, 보존 기준 `25d264b` (계정 우선순위 `415700d` 포함). 기존 번역 15개와 QUIC 임시 수정 1개 파일은 원래 checkout에 그대로 보존했다. 현재 운영 실행 파일의 소스는 아래 통합 worktree 기준이다.
 - `integrations/antigravity-add-model/`: `local/preserve-implemented-work`, 보존 기준 `228f0db` (테스트 환경 분리 `1296b41` 포함).
-- 에이전트 앱의 현재 작업 공간은 같은 폴더를 공유하는 local workspace입니다. 별도 소스 복사본인 Git worktree는 아직 만들지 않았습니다. 서비스 실행·복구는 기존 launchd가 담당합니다.
+- 원래 에이전트 앱 작업 공간은 같은 운영 폴더를 공유한다. 통합 작업은 별도 worktree `integration/upstream-669a207`에서 진행했다. 서비스 실행·복구는 기존 launchd가 담당한다.
 
 이 커밋 조합은 소스 보존 기준이며 새로운 빌드·실사용 검증 결과가 아닙니다. 계정명·사설 주소가 문서와 테스트에 포함되어 있으므로 공개 전에 개인정보를 별도로 검토해야 합니다. 인증정보·운영 상태는 Git에서 복원되지 않습니다.
+
+## 승인된 원본 업데이트 운영 반영
+
+- 원본 `669a207`과 계정 우선순위·Mac 브라우저 도우미·기존 번역을 합친 통합본을 운영에 반영했다. 통합 worktree는 `~/worktrees/ais-upstream-integration`, 기록 기준 커밋은 `7b064f8`다.
+- 실제 배포 바이너리의 소스 revision은 `f8ecc39`(clean)이며, 이후 `7b064f8`는 검증 결과 문서만 추가했다. SHA-256은 `f67d0264dbe69c58f38094afd1001a0a30678fbc20665e510e48dcb850781714`다.
+- 기존 바이너리와 일관된 SQLite 백업은 `service/runtime/deployment-backups/20261028T202418Z/`에 보존했다. 복구용 실행 파일은 `aistudio2api.previous`, 배포 기록은 `manifest.json`이다. 이 폴더는 Git 추적 대상이 아니다. DB 백업은 자동 덮어쓰기용이 아니며, 복원 전에 배포 후 요청 데이터 손실을 검토해야 한다.
+- 게이트웨이와 GUI 브라우저 도우미만 새 바이너리로 재시작했다. 시스템 gateway의 `launchctl kickstart`는 권한 오류가 났고, 담당 에이전트가 중단하지 않고 같은 사용자 소유 PID에 SIGTERM을 보내 launchd 재기동으로 진행했다. 관리자 권한·보안 설정은 바꾸지 않았다. 모델 연결과 Tailscale 프로세스는 유지했다.
+- 배포 후 로컬·사설 HTTPS `/health`와 모델 연결 서비스가 HTTP 200, 미인증 계정 조회가 HTTP 401이었다. 계정 4개·계정 우선순위·운영 설정이 유지됐다. 인증 상태 파일 일부는 재시작 중 갱신되어 파일 내용 전체가 불변인 것은 아니다.
+- 실제 구독 요청 1건: `gemini-4-argon`, `playground`, HTTP 200, `completed`, 입력 168·응답 5토큰·도구 호출 0회. 공식 유료 API는 연결하거나 사용하지 않았다.
+- 이번 확인은 API 요청 1건이다. Antigravity 화면에서의 재요청, 새 Google 로그인·만료 계정 재인증, 영상 입력 실사용, 재부팅 후 로그인 전 동작은 별도 검증 대상이다.
