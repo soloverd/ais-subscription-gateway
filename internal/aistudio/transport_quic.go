@@ -130,6 +130,7 @@ func dialFirefoxQUIC(ctx context.Context, host string, resumption *quicResumptio
 		Versions:                       []quic.Version{quic.Version1},
 		HandshakeIdleTimeout:           firefoxQUICIdleTimeout,
 		MaxIdleTimeout:                 firefoxQUICIdleTimeout,
+		KeepAlivePeriod:                firefoxQUICIdleTimeout / 2,
 		InitialStreamReceiveWindow:     firefoxQUICMaxStreamData,
 		MaxStreamReceiveWindow:         firefoxQUICMaxStreamData,
 		InitialConnectionReceiveWindow: firefoxQUICMaxData,

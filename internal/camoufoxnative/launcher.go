@@ -235,7 +235,7 @@ func startBrowserCommand(
 		return nil, "", startupExitError(err)
 	case <-timer.C:
 		_ = process.Close()
-		return nil, "", fmt.Errorf("等待 Camoufox BiDi 端点超时: %s", timeout)
+		return nil, "", fmt.Errorf("Camoufox BiDi 연결 대기 시간 초과: %s", timeout)
 	case <-ctx.Done():
 		_ = process.Close()
 		return nil, "", ctx.Err()

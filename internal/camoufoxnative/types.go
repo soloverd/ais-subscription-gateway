@@ -11,7 +11,7 @@ import (
 var ErrAuthenticationRequired = errors.New("隔离登录态失效")
 
 // ErrRegionNotSupported 表示 AI Studio 不支持当前出口地区或账户
-var ErrRegionNotSupported = errors.New("AI Studio 不支持当前出口地区或账户")
+var ErrRegionNotSupported = errors.New("AI Studio가 현재 접속 지역 또는 계정을 지원하지 않음")
 
 // AvailableRegionsURL 是官网在地区或账户不受支持时跳转的页面
 const AvailableRegionsURL = "https://aistudio.google.com/docs/available-regions"

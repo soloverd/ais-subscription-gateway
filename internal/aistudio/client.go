@@ -138,12 +138,12 @@ func (e *RPCError) regionNotSupported() bool {
 // Error 返回结构化上游错误
 func (e *RPCError) Error() string {
 	if e.regionNotSupported() {
-		return fmt.Sprintf("AI Studio %s 返回 HTTP %d、协议错误码 %d: %s（%v，官网跳转 %s）", e.Method, e.StatusCode, e.Code, e.Message, camoufoxnative.ErrRegionNotSupported, camoufoxnative.AvailableRegionsURL)
+		return fmt.Sprintf("AI Studio %s 요청 실패(HTTP %d, 프로토콜 오류 코드 %d): %s (%v, 지원 지역 안내 %s)", e.Method, e.StatusCode, e.Code, e.Message, camoufoxnative.ErrRegionNotSupported, camoufoxnative.AvailableRegionsURL)
 	}
 	if e.Code != 0 {
-		return fmt.Sprintf("AI Studio %s 返回 HTTP %d、协议错误码 %d: %s", e.Method, e.StatusCode, e.Code, e.Message)
+		return fmt.Sprintf("AI Studio %s 요청 실패(HTTP %d, 프로토콜 오류 코드 %d): %s", e.Method, e.StatusCode, e.Code, e.Message)
 	}
-	return fmt.Sprintf("AI Studio %s 返回 HTTP %d: %s", e.Method, e.StatusCode, e.Message)
+	return fmt.Sprintf("AI Studio %s 요청 실패(HTTP %d): %s", e.Method, e.StatusCode, e.Message)
 }
 
 // Unwrap 把地区或账户不受支持的错误映射为 camoufoxnative.ErrRegionNotSupported
@@ -172,7 +172,7 @@ func (c *Client) do(ctx context.Context, method string, accountID string, reques
 	c.applyBenefitTier(method, accountID, rpc.Header)
 	response, err := c.transport.Do(ctx, rpc)
 	if err != nil {
-		return nil, fmt.Errorf("发送 AI Studio %s: %w", method, err)
+		return nil, fmt.Errorf("AI Studio %s 요청 전송 실패: %w", method, err)
 	}
 	return validateRPCResponse(method, response)
 }
@@ -186,7 +186,7 @@ func (c *Client) doProtected(ctx context.Context, request GenerateRequest, body 
 	}
 	response, err := c.protected.DoProtected(ctx, request, rpc)
 	if err != nil {
-		return nil, fmt.Errorf("发送 AI Studio GenerateContent: %w", err)
+		return nil, fmt.Errorf("AI Studio GenerateContent 요청 전송 실패: %w", err)
 	}
 	return validateRPCResponse("GenerateContent", response)
 }

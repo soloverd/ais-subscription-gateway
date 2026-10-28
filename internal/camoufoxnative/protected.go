@@ -125,7 +125,7 @@ func (worker *Worker) SendProtected(ctx context.Context, rawURL string, headers 
 	worker.mu.Lock()
 	if worker.closed {
 		worker.mu.Unlock()
-		return nil, errors.New("Camoufox runtime 已关闭")
+		return nil, errors.New("Camoufox 런타임이 종료됨")
 	}
 	client := worker.client
 	contextID := worker.contextID
@@ -209,7 +209,7 @@ func (worker *Worker) StorageCookies(ctx context.Context) ([]byte, error) {
 	worker.mu.Lock()
 	if worker.closed {
 		worker.mu.Unlock()
-		return nil, errors.New("Camoufox runtime 已关闭")
+		return nil, errors.New("Camoufox 런타임이 종료됨")
 	}
 	client := worker.client
 	worker.mu.Unlock()

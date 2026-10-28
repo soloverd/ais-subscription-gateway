@@ -198,7 +198,7 @@ func (admin *runtimeAdmin) CreateAccount(ctx context.Context, input api.AccountC
 	}
 	admin.requests.log("auth", "INFO", "账户添加 | 2/2 | 保存认证状态")
 	if _, err := aistudio.NewSigner().Sign(result.StorageState); err != nil {
-		return api.AdminAccount{}, fmt.Errorf("认证状态无法用于 AI Studio: %w", err)
+		return api.AdminAccount{}, fmt.Errorf("저장된 로그인 정보로 AI Studio를 사용할 수 없음: %w", err)
 	}
 	accountConfig.Label = result.Email
 	if err := accountConfig.Validate(); err != nil {
@@ -336,7 +336,7 @@ func (admin *runtimeAdmin) ImportChromeAccounts(ctx context.Context, input api.C
 			return nil, invalidAccount(err)
 		}
 		if _, err := aistudio.NewSigner().Sign(result.State); err != nil {
-			return nil, fmt.Errorf("认证状态无法用于 AI Studio: %w", err)
+			return nil, fmt.Errorf("저장된 로그인 정보로 AI Studio를 사용할 수 없음: %w", err)
 		}
 		configs[index] = accountConfig
 	}
@@ -380,7 +380,7 @@ func (admin *runtimeAdmin) ImportAccountState(ctx context.Context, input api.Acc
 		return api.AdminAccount{}, invalidAccount(err)
 	}
 	if _, err := aistudio.NewSigner().Sign(input.StorageState); err != nil {
-		return api.AdminAccount{}, invalidAccount(fmt.Errorf("认证状态无法用于 AI Studio: %w", err))
+		return api.AdminAccount{}, invalidAccount(fmt.Errorf("저장된 로그인 정보로 AI Studio를 사용할 수 없음: %w", err))
 	}
 	email := accountConfig.Label
 	if extension, exists, err := input.StorageState.AuthExtension(); err != nil {
@@ -583,7 +583,7 @@ func (admin *runtimeAdmin) LoginAccount(ctx context.Context, accountID string, v
 	}
 	admin.requests.log(account.Config.Label, "INFO", "账户登录 | 2/2 | 保存认证状态")
 	if _, err := aistudio.NewSigner().Sign(result.StorageState); err != nil {
-		return api.AdminAccount{}, errors.Join(fmt.Errorf("认证状态无法用于 AI Studio: %w", err), lease.Release())
+		return api.AdminAccount{}, errors.Join(fmt.Errorf("저장된 로그인 정보로 AI Studio를 사용할 수 없음: %w", err), lease.Release())
 	}
 	if err := camoufoxnative.PersistAccountFingerprint(directory, account.Directory); err != nil {
 		return api.AdminAccount{}, errors.Join(err, lease.Release())

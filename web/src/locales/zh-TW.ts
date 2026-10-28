@@ -1249,6 +1249,7 @@ export const logs: Record<LogPhrase, string> = {
   文件: '檔案',
   通道: '通道',
   模式: '模式',
+  续写: '續寫',
   记录: '記錄',
   丢弃: '捨棄',
   天数: '天數',

@@ -1336,6 +1336,7 @@ export const logs: Record<LogPhrase, string> = {
   文件: 'Fichiers',
   通道: 'Canal',
   模式: 'Mode',
+  续写: 'Continuation',
   记录: 'Entrées',
   丢弃: 'Abandonnées',
   天数: 'Jours',

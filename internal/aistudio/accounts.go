@@ -55,19 +55,19 @@ const (
 
 var (
 	// ErrInvalidArgument 表示请求参数在发送前已确定无效
-	ErrInvalidArgument = errors.New("AI Studio 请求参数无效")
+	ErrInvalidArgument = errors.New("AI Studio 요청 값이 올바르지 않음")
 	// ErrModelNotFound 表示实时目录中不存在请求模型
-	ErrModelNotFound = errors.New("AI Studio 实时目录中没有请求模型")
+	ErrModelNotFound = errors.New("AI Studio 실시간 모델 목록에 요청한 모델이 없음")
 	// ErrNoEligibleAccount 表示没有账户具备请求所需能力
-	ErrNoEligibleAccount = errors.New("没有符合条件的 AI Studio 账户")
+	ErrNoEligibleAccount = errors.New("조건에 맞는 AI Studio 계정이 없음")
 	// ErrAccountNotFound 表示稳定账户 ID 不存在
-	ErrAccountNotFound = errors.New("账户不存在")
+	ErrAccountNotFound = errors.New("계정이 없음")
 	// ErrAccountLeased 表示账户当前存在进程内或跨进程租约
-	ErrAccountLeased = errors.New("账户正在使用")
+	ErrAccountLeased = errors.New("계정이 사용 중")
 	// ErrAccountCoolingDown 表示租约账户在请求发出前进入冷却
-	ErrAccountCoolingDown = errors.New("账户已进入冷却")
+	ErrAccountCoolingDown = errors.New("계정이 쿨다운 중")
 	// ErrResourceNotFound 表示资源没有创建账户映射
-	ErrResourceNotFound = errors.New("资源账户映射不存在")
+	ErrResourceNotFound = errors.New("리소스와 연결된 계정이 없음")
 	errAccountLeaseBusy = ErrAccountLeased
 )
 
@@ -79,11 +79,11 @@ type AllCoolingError struct {
 }
 
 func (e *AllCoolingError) Error() string {
-	message := fmt.Sprintf("模型 %s 的可用账户均在冷却，最早恢复时间 %s", e.ModelID, e.Until.Local().Format(time.RFC3339))
+	message := fmt.Sprintf("모델 %s를 쓸 수 있는 계정이 모두 쿨다운 중, 가장 빠른 복구 시간 %s", e.ModelID, e.Until.Local().Format(time.RFC3339))
 	if e.Reason == "" {
 		return message
 	}
-	return message + "；" + e.Reason
+	return message + "; " + e.Reason
 }
 
 // RetryAt 返回最早恢复的时刻
@@ -107,7 +107,7 @@ type AccountsNotReadyError struct {
 }
 
 func (e *AccountsNotReadyError) Error() string {
-	return ErrNoEligibleAccount.Error() + "：" + strings.Join(e.Reasons, "；")
+	return ErrNoEligibleAccount.Error() + ": " + strings.Join(e.Reasons, "; ")
 }
 
 func (e *AccountsNotReadyError) Unwrap() error {
@@ -116,9 +116,9 @@ func (e *AccountsNotReadyError) Unwrap() error {
 
 // accountStateLabels 为不可调度账户状态的中文说明
 var accountStateLabels = map[AccountState]string{
-	AccountAuthRequired: "需要重新登录",
-	AccountUnavailable:  "不可用",
-	AccountDisabled:     "已停用",
+	AccountAuthRequired: "로그인 필요",
+	AccountUnavailable:  "사용 불가",
+	AccountDisabled:     "사용 중지됨",
 }
 
 // AccountConfig 表示账户目录中的固定最小配置
@@ -1264,7 +1264,7 @@ func (p *AccountPool) noEligibleErrorLocked(selection AccountSelection) error {
 		}
 		reason := account.ID + " " + label
 		if message := strings.TrimSpace(account.stateMessage); message != "" {
-			reason += "（" + message + "）"
+			reason += " (" + message + ")"
 		}
 		reasons = append(reasons, reason)
 	}

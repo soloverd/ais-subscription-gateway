@@ -93,7 +93,7 @@ func (client *bidiClient) command(ctx context.Context, method string, params map
 	if client.regionURL != "" {
 		region := client.regionURL
 		client.mu.Unlock()
-		return nil, fmt.Errorf("%w，官网跳转 %s", ErrRegionNotSupported, region)
+		return nil, fmt.Errorf("%w, 지원 지역 안내 %s", ErrRegionNotSupported, region)
 	}
 	if client.failure != nil {
 		failure := client.failure
@@ -172,7 +172,7 @@ func (client *bidiClient) respond(id int, message map[string]any) {
 
 // fail 记录连接失败并结束全部等待中的命令与通道
 func (client *bidiClient) fail(err error) {
-	failure := fmt.Errorf("BiDi 连接已断开: %w", err)
+	failure := fmt.Errorf("BiDi 연결 끊김: %w", err)
 	client.mu.Lock()
 	client.failure = failure
 	pending, channels := client.pending, client.channels

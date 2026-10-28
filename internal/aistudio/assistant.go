@@ -420,7 +420,7 @@ func (d *AssistantStreamDecoder) decodeStep(raw json.RawMessage, path string, ev
 		if err != nil {
 			return nil, withMethod(err, assistantStreamMethod)
 		}
-		return nil, &RPCError{Method: assistantStreamMethod, StatusCode: http.StatusBadGateway, Message: "生成步骤失败: " + message}
+		return nil, &RPCError{Method: assistantStreamMethod, StatusCode: http.StatusBadGateway, Message: "생성 단계 실패: " + message}
 	}
 	if usageRaw := rawAt(step, 15); !isJSONNull(usageRaw) && status == 1 {
 		usage, err := decodeAssistantUsage(usageRaw, path+"[15]", evidence)
