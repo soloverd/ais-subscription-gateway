@@ -110,6 +110,15 @@ Mac 사용자 세션이 없으면 새 Google 로그인은 할 수 없으며, 웹
 - 실제 구독 요청 1건: `gemini-4-argon`, 주 계정 `charlie.main@example.com`, `playground`, HTTP 200, `completed`, 응답 `OK`, 입력 167·응답 5토큰.
 - 미검증: 관리자 로그인 뒤 버전 탭 화면 자체, Antigravity 화면에서의 요청, 새 Google 로그인·재인증(도우미 경유), 계정 간 실제 전환.
 
+## Antigravity 공식 앱 2.29.0 반영 (2026-11-05)
+
+- 공식 앱은 아직 새 버전을 내려받지 않은 상태였다(설치 2.26.0, 공식 최신 2.29.0). 그래서 `check`에 공식 업데이트 서버 버전 목록 비교를 추가했다.
+- 공식 파일: `https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml`이 가리키는 `Antigravity.zip`(188,267,225바이트). 내려받은 뒤 이 목록의 SHA-512와 일치하는지, Google 서명·Apple 공증이 유효한지 확인했다.
+- 교체 전 점검: 연결 프로그램 사전 점검(`deploy` 검사 모드)을 2.26.0·2.29.0 모두에 실행해 통과했다. 임시 폴더에 시험 복제본을 만들고 `verify`까지 성공한 뒤 지웠다. 2.29.0에 새로 생긴 실행 파일 `Resources/bin/cable_ble_scanner`도 권한(entitlements)을 유지한 채 재서명됐다.
+- 교체: 복제본을 정상 종료했다. 기존 공식 앱·복제본·`.clone.json`은 `service/runtime/deployment-backups/20261104T162356Z-antigravity-2.26.0/`으로 옮겼다(Git 제외). 같은 ID의 앱으로 열리지 않도록 이름 끝에 `.backup`을 붙였다. 되돌리는 방법은 같은 폴더의 `manifest.txt`에 있다. 이어서 2.29.0을 `/Applications`에 풀고, `node scripts/macos-clone.mjs prepare --profile service/antigravity-app`(기존 사용자 데이터 폴더)으로 복제본을 다시 만들었다. `verify`는 `entitlementsPreserved: true`, `sourceVersion: 2.29.0`이었다.
+- 실행 확인: 앱 2.29.0 시작, 언어 서버가 복제본 내부 프록시(`localhost`)를 사용, 로그인 유지(`fetchUserInfo` 200), 모델 목록 가로채기 정상. 사용자가 화면에서 구독 모델로 메시지를 보냈다. 연결 프로그램이 `custom-gemini-4-argon` → `구독 · AI Studio Argon`으로 넘겼고, 게이트웨이 기록은 `gemini-4-argon`, `alpha.sub@example.com`, HTTP 200, 도구 호출 1회 뒤 `completed`였다.
+- 이번 요청은 주 계정이 아닌 `alpha.sub` 계정을 썼다. 업데이트 전(01:20~01:22) 요청도 같은 계정이었으므로 이번 교체 때문은 아니다.
+
 ## 업데이트 유지보수 (두 원본을 따라 내 앱 최신 유지)
 
 내 앱은 남이 만든 원본 두 개에 내 수정을 덧붙여 조합한 것이다. 원본에 새 버전이 나오면 내 수정은 살린 채 합쳐서 다시 반영한다. 정책은 **알림 후 승인 반영**이다(2026-11-04 사용자 결정). 새 버전을 확인해 알리기만 하고, 사용자가 승인했을 때만 반영한다.
@@ -135,7 +144,7 @@ bin/update.sh antigravity    # 연결 프로그램: 합치기 → 빌드·시험
 - **충돌**(종료 코드 2): 원본과 내 수정이 같은 곳을 고친 경우다. 해당 폴더에서 정리해 커밋한 뒤 같은 명령을 다시 실행하면 이어서 진행한다. 지켜야 할 내 수정: `ACCOUNT_ORDER` 계정 우선순위, Mac 사용자 세션 브라우저 도우미, 자주 보이는 오류의 한국어 문구, Antigravity 앱 복제 지원.
 - **시험 실패**(3)면 운영은 바뀌지 않는다. **배포 후 90초 안에 응답이 없으면** 이전 실행 파일과 `.env`로 자동으로 되돌린다(4). 백업은 `service/runtime/deployment-backups/<시각>/`에 남는다.
 - 단계만 따로 실행할 수 있다. 예: `bin/update.sh gateway test`, `bin/update.sh gateway verify`.
-- 공식 Antigravity 앱이 업데이트되면 `check`가 알려 준다. 복제본 `Antigravity Gateway.app`을 다시 만드는 일(`npm run mac:clone`)은 앱 재서명이 포함되므로 별도 승인 후 진행한다.
+- 공식 Antigravity 앱은 `check`가 두 가지로 확인한다. 하나는 설치된 공식 앱이 복제 이후 바뀌었는지, 다른 하나는 공식 업데이트 서버에 더 새 버전이 있는지다. 복제본 `Antigravity Gateway.app`을 다시 만드는 일은 앱 재서명이 포함되므로 별도 승인 후 진행한다. 절차는 위 "Antigravity 공식 앱 2.29.0 반영"을 따른다.
 - 게이트웨이 빌드에 필요한 SpiderMonkey 라이브러리는 원본 `build.yml`이 지정한 버전을 쓴다. 없으면 GitHub 등록 해시와 일치할 때만 내려받는다. `bin/build.sh`는 v0.3.0 이전 방식이라 쓰지 않는다.
 
 ### 시험한 범위 (2026-11-04)
