@@ -80,8 +80,8 @@ Mac 사용자 세션이 없으면 새 Google 로그인은 할 수 없으며, 웹
 2026-10-26 사용자 승인으로 운영 루트와 두 소스 저장소를 별도로 보존했습니다. 원격 푸시나 서비스 재설치는 하지 않았습니다.
 
 - 운영 루트: `local/operations-preservation`. `.gitignore`에 명시한 운영 스크립트와 문서만 추적합니다. `service/`, 도구체인, 빌드 산출물과 중첩 소스 저장소는 제외합니다. 새 파일은 검토 후 허용 목록에 추가해야 합니다.
-- `upstream/`: `local/preserve-implemented-work`, 보존 기준 `25d264b` (계정 우선순위 `415700d` 포함). 기존 번역 15개와 QUIC 임시 수정 1개 파일은 원래 checkout에 그대로 보존했다. 현재 운영 실행 파일의 소스는 아래 통합 worktree 기준이다.
-- `integrations/antigravity-add-model/`: `local/preserve-implemented-work`, 보존 기준 `228f0db` (테스트 환경 분리 `1296b41` 포함).
+- `upstream/`: (이력) `local/preserve-implemented-work`, 보존 기준 `25d264b`. 커밋되지 않았던 번역 15개·QUIC 수정 1개는 `bd146a5`에 같은 내용으로 들어 있다. 2026-11-04부터 이 폴더는 `gateway` 브랜치(현재 운영 소스)다. 아래 "업데이트 유지보수" 참고.
+- `integrations/antigravity-add-model/`: 2026-11-04부터 브랜치 이름 `antigravity`(옛 이름 `local/preserve-implemented-work`, 같은 커밋 `228f0db`).
 - 원래 에이전트 앱 작업 공간은 같은 운영 폴더를 공유한다. 통합 작업은 별도 worktree `integration/upstream-669a207`에서 진행했다. 서비스 실행·복구는 기존 launchd가 담당한다.
 
 이 커밋 조합은 소스 보존 기준이며 새로운 빌드·실사용 검증 결과가 아닙니다. 계정명·사설 주소가 문서와 테스트에 포함되어 있으므로 공개 전에 개인정보를 별도로 검토해야 합니다. 인증정보·운영 상태는 Git에서 복원되지 않습니다.
@@ -110,14 +110,35 @@ Mac 사용자 세션이 없으면 새 Google 로그인은 할 수 없으며, 웹
 - 실제 구독 요청 1건: `gemini-4-argon`, 주 계정 `charlie.main@example.com`, `playground`, HTTP 200, `completed`, 응답 `OK`, 입력 167·응답 5토큰.
 - 미검증: 관리자 로그인 뒤 버전 탭 화면 자체, Antigravity 화면에서의 요청, 새 Google 로그인·재인증(도우미 경유), 계정 간 실제 전환.
 
-## 원격 백업 저장소
+## 업데이트 유지보수 (두 원본을 따라 내 앱 최신 유지)
 
-비공개 GitHub 저장소 `soloverd/ais-subscription-gateway` 하나에 운영 기록과 로컬 수정 소스를 브랜치로 나눠 보관한다. 원본 `Mag1cFall/AIStudio2API`에는 푸시하지 않는다.
+내 앱은 남이 만든 원본 두 개에 내 수정을 덧붙여 조합한 것이다. 원본에 새 버전이 나오면 내 수정은 살린 채 합쳐서 다시 반영한다. 정책은 **알림 후 승인 반영**이다(2026-11-04 사용자 결정). 새 버전을 확인해 알리기만 하고, 사용자가 승인했을 때만 반영한다.
 
-| 브랜치 | 내용 | 로컬 위치 |
-| --- | --- | --- |
-| `main` | 운영 문서·승인된 `bin/` 스크립트(이 폴더, 로컬 `local/operations-preservation`) | 이 폴더 |
-| `integration/upstream-v0.3.0` | 현재 배포 중인 게이트웨이 소스(원본 v0.3.0 + 로컬 수정) | `~/worktrees/ais-upstream-v0.3.0` |
-| `integration/upstream-669a207` | 직전 배포 소스, 되돌리기용 | `~/worktrees/ais-upstream-integration` |
+| 부품 | 원본 | 따라가는 기준 | 내 버전이 있는 곳 (로컬 폴더 / 비공개 저장소 브랜치) |
+| --- | --- | --- | --- |
+| 게이트웨이 | `Mag1cFall/AIStudio2API` | 최신 **정식 릴리스** (대시보드 버전 탭과 같은 기준) | `upstream/` / `gateway` |
+| 연결 프로그램 | `vahapogut/antigravity-add-model` | 원본 `main` (정식 릴리스를 내지 않음) | `integrations/antigravity-add-model/` / `antigravity` |
+| 운영 기록·스크립트 | — | — | 이 폴더 / `main` |
 
-`service/`의 인증정보·`.env`·DB·백업과 빌드 산출물은 올리지 않는다. 문서와 테스트에 계정 이메일과 사설 주소가 있으므로 저장소를 공개로 바꾸지 않는다.
+비공개 저장소는 `soloverd/ais-subscription-gateway` 하나다. 원본 저장소에는 푸시하지 않는다. 배포할 때마다 `gateway-날짜`, `antigravity-날짜` 태그를 붙여 어떤 소스가 운영에 들어갔는지 남긴다. `service/`의 인증정보·`.env`·DB·백업과 빌드 산출물은 올리지 않으며, 문서와 테스트에 계정 이메일·사설 주소가 있으므로 저장소를 공개로 바꾸지 않는다.
+
+### 명령
+
+```bash
+bin/update.sh check          # 새 버전이 있는지만 확인. 아무것도 바꾸지 않음. 새 버전이 있으면 종료 코드 10
+bin/update.sh gateway        # 게이트웨이: 합치기 → 시험 → 빌드 → 백업·교체 → 실제 요청 확인 → 비공개 저장소 보관
+bin/update.sh antigravity    # 연결 프로그램: 합치기 → 빌드·시험 → 모델 연결 서비스 재시작 → 확인 → 보관
+```
+
+- **매일 자동 확인은 아직 등록되지 않았다**(2026-11-04 예약 작업 등록이 권한 검사에서 보류됨). 그 전까지는 대시보드 버전 탭(게이트웨이 새 정식 릴리스 표시)이나 `bin/update.sh check`로 확인한다.
+- 반영할 것이 없으면 "할 일이 없습니다"로 끝난다. 여러 번 실행해도 안전하다.
+- **충돌**(종료 코드 2): 원본과 내 수정이 같은 곳을 고친 경우다. 해당 폴더에서 정리해 커밋한 뒤 같은 명령을 다시 실행하면 이어서 진행한다. 지켜야 할 내 수정: `ACCOUNT_ORDER` 계정 우선순위, Mac 사용자 세션 브라우저 도우미, 자주 보이는 오류의 한국어 문구, Antigravity 앱 복제 지원.
+- **시험 실패**(3)면 운영은 바뀌지 않는다. **배포 후 90초 안에 응답이 없으면** 이전 실행 파일과 `.env`로 자동으로 되돌린다(4). 백업은 `service/runtime/deployment-backups/<시각>/`에 남는다.
+- 단계만 따로 실행할 수 있다. 예: `bin/update.sh gateway test`, `bin/update.sh gateway verify`.
+- 공식 Antigravity 앱이 업데이트되면 `check`가 알려 준다. 복제본 `Antigravity Gateway.app`을 다시 만드는 일(`npm run mac:clone`)은 앱 재서명이 포함되므로 별도 승인 후 진행한다.
+- 게이트웨이 빌드에 필요한 SpiderMonkey 라이브러리는 원본 `build.yml`이 지정한 버전을 쓴다. 없으면 GitHub 등록 해시와 일치할 때만 내려받는다. `bin/build.sh`는 v0.3.0 이전 방식이라 쓰지 않는다.
+
+### 시험한 범위 (2026-11-04)
+
+- `check`, 반영할 것이 없을 때의 `gateway`·`antigravity` 전체 실행, `gateway test·build·deploy(같은 소스라 교체 건너뜀)·verify·save`, `antigravity verify·save`를 실제로 실행했다.
+- 실제로 새 버전을 합쳐 교체하는 경로(백업·재시작·자동 되돌리기)와 `antigravity build`는 아직 새 버전이 없어 실행하지 않았다. 교체 절차 자체는 v0.3.0 배포 때 손으로 같은 순서로 수행해 확인했다.
