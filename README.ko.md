@@ -95,3 +95,17 @@ Mac 사용자 세션이 없으면 새 Google 로그인은 할 수 없으며, 웹
 - 배포 후 로컬·사설 HTTPS `/health`와 모델 연결 서비스가 HTTP 200, 미인증 계정 조회가 HTTP 401이었다. 계정 4개·계정 우선순위·운영 설정이 유지됐다. 인증 상태 파일 일부는 재시작 중 갱신되어 파일 내용 전체가 불변인 것은 아니다.
 - 실제 구독 요청 1건: `gemini-4-argon`, `playground`, HTTP 200, `completed`, 입력 168·응답 5토큰·도구 호출 0회. 공식 유료 API는 연결하거나 사용하지 않았다.
 - 이번 확인은 API 요청 1건이다. Antigravity 화면에서의 재요청, 새 Google 로그인·만료 계정 재인증, 영상 입력 실사용, 재부팅 후 로그인 전 동작은 별도 검증 대상이다.
+
+## 원본 v0.3.0 업데이트 운영 반영 (2026-11-04)
+
+- 원본 GitHub 최신 `v0.3.0`(`591c81f`)을 기존 통합본(`7b064f8`)에 병합했다. 통합 worktree는 `~/worktrees/ais-upstream-v0.3.0`, 브랜치 `integration/upstream-v0.3.0`, 커밋 `259b2f0`(clean)다. 이전 통합 worktree·브랜치는 그대로 두었다.
+- 유지한 로컬 기능: 계정 우선순위 `ACCOUNT_ORDER`(새 설정 구조에 다시 넣음), Mac 사용자 세션 브라우저 도우미, 세션 없음 안내 문구, 자주 보이는 오류의 한국어 문구. 화면 로그 번역은 원본이 서버 번역표로 옮겨 원본 구조를 따랐다.
+- 버전 탭은 현재 `v0.3.1-0.20261104103143-259b2f044fbe`, 최신 `v0.3.0`, 업데이트 방식 `development`로 표시한다. 소스 빌드라서 **온라인 업데이트 버튼이 잠겨** 로컬 수정본이 공식 파일로 덮어써지지 않는다. 다음 원본 업데이트도 같은 병합·빌드 절차로 반영한다.
+- 빌드에는 원본 작성자의 SpiderMonkey 정적 라이브러리가 필요하다. `toolchain/spidermonkey/v152.0.4-aistudio2api.1-darwin-arm64`(tar SHA-256 `19f690d5…b673`, GitHub 등록값과 일치)를 쓰고 `CGO_CXXFLAGS=-I…/include`, `CGO_LDFLAGS=-L…/lib`로 빌드했다. `bin/build.sh`는 옛 `upstream/` 경로용이라 이 빌드에 쓰지 않았다.
+- 실행 파일 SHA-256 `a3b6588befb1f1790599a7142bc2f65370b7c3f3c977ec573ced12b18013b1fc`. 이전 실행 파일·`.env`·DB 백업과 배포 기록은 `service/runtime/deployment-backups/20261104T103417Z/`(Git 제외, `env.previous`에는 비밀값 포함)에 있다.
+- 새 버전은 첫 시작 때 옛 형식의 `.env`를 자동 정리한다. 기본값과 같은 항목이 빠지고, `WAA_BACKEND=go`는 기본값 `spidermonkey`(브라우저 없이 서비스 안에서 실행)로 바뀌었다. 배포 전 `.env`에 남아 있던 `UPSTREAM_CHANNELS=playground,build`도 빠져 문서 의도대로 `playground`만 쓴다. `ACCOUNT_ORDER`·`fill-first`는 유지됐다. **되돌릴 때는 이전 실행 파일과 `env.previous`를 함께 복원**해야 한다(이전 버전은 `spidermonkey` 값을 받지 않는다).
+- 배포 전 `.env`의 `REQUEST_TIMEOUT`은 문서의 5분이 아니라 30분이었다. 이번 배포로 바뀐 값이 아니며 그대로 30분이다.
+- 원본 새 기본값으로 `gemini-4-argon`에는 첫 응답이 늦을 때 다른 계정으로 예비 요청을 보내는 기능(`FIRST_EVENT_HEDGE=auto`)이 켜진다. 느린 요청에서 사용량이 조금 더 들 수 있다.
+- 재시작은 브라우저 도우미(PID 650→61806)와 게이트웨이(PID 271→61941)만 했다. 모델 연결·Tailscale은 유지했다. 재시작 뒤 경고·오류 로그 0건, 로컬·사설 HTTPS `/health` 200, 미인증 관리 API 401, 계정 5개·모델 45개 준비.
+- 실제 구독 요청 1건: `gemini-4-argon`, 주 계정 `charlie.main@example.com`, `playground`, HTTP 200, `completed`, 응답 `OK`, 입력 167·응답 5토큰.
+- 미검증: 관리자 로그인 뒤 버전 탭 화면 자체, Antigravity 화면에서의 요청, 새 Google 로그인·재인증(도우미 경유), 계정 간 실제 전환.
