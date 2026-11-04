@@ -12,7 +12,7 @@ export interface LogRow {
 export type LogStageState = 'running' | 'completed' | 'failed' | 'cancelled'
 
 // LogStage 是同一来源分阶段运行日志合并后的进度
-export interface LogStage {
+interface LogStage {
   name: string
   step: number
   steps: number
@@ -51,6 +51,20 @@ export function formatLogNumber(value: number, locale: string, digits = 0): stri
   return format.format(value)
 }
 
+// prettyBody 缩进 JSON 正文，非 JSON 保持原文
+export function prettyBody(text: string): string {
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2)
+  } catch {
+    return text
+  }
+}
+
+// byteLength 返回文本的 UTF-8 字节数
+export function byteLength(text: string): number {
+  return new TextEncoder().encode(text).length
+}
+
 // stagePattern 匹配“阶段名 | i/N | 详情”形式的阶段步骤消息
 const stagePattern = /^(.+?) \| (\d+)\/(\d+)(?: \| ([\s\S]*))?$/
 
@@ -78,13 +92,11 @@ function stageEnd(title: string): [string, LogStageState] | undefined {
 }
 
 // levelRanks 是日志级别的严重程度
-const levelRanks: Record<string, number> = { INFO: 1, WARN: 2, ERROR: 3 }
+const levelRanks: Record<AdminLog['level'], number> = { INFO: 1, WARN: 2, ERROR: 3 }
 
 // severerLevel 返回两个日志级别中更严重的一个
-function severerLevel(current: string, next: string): string {
-  return (levelRanks[next.toUpperCase()] ?? 0) > (levelRanks[current.toUpperCase()] ?? 0)
-    ? next
-    : current
+function severerLevel(current: AdminLog['level'], next: AdminLog['level']): AdminLog['level'] {
+  return levelRanks[next] > levelRanks[current] ? next : current
 }
 
 // mergeStage 把一条运行日志并入阶段卡片，卡片保持首条消息的时间并取最严重的级别
@@ -119,9 +131,10 @@ function groupStage(rows: LogRow[], stages: Map<string, StageRow>, entry: AdminL
   }
   const separator = entry.message.indexOf(' | ')
   const title = separator < 0 ? entry.message : entry.message.slice(0, separator)
+  const detail = separator < 0 ? '' : entry.message.slice(separator + 3)
   const open = stages.get(`${entry.source}\n${title}`)
   if (open) {
-    mergeStage(open, entry, separator < 0 ? '' : entry.message.slice(separator + 3))
+    mergeStage(open, entry, detail)
     return true
   }
   const end = stageEnd(title)
@@ -129,14 +142,14 @@ function groupStage(rows: LogRow[], stages: Map<string, StageRow>, entry: AdminL
   const key = `${entry.source}\n${end[0]}`
   const ended = stages.get(key)
   if (ended === undefined) return false
-  mergeStage(ended, entry, entry.message)
+  mergeStage(ended, entry, detail)
   ended.stage.state = end[1]
   stages.delete(key)
   return true
 }
 
-// groupLogs 按请求标识合并生命周期、按来源与阶段名合并分阶段运行日志，并保持服务事件的原始顺序
-export function groupLogs(logs: AdminLog[]): LogRow[] {
+// groupLogs 按请求标识合并生命周期、按来源与阶段名合并分阶段运行日志，并保持服务事件的原始顺序；previous 中事件相同的行沿用原对象
+export function groupLogs(logs: AdminLog[], previous: ReadonlyMap<string, LogRow>): LogRow[] {
   const rows: LogRow[] = []
   const requests = new Map<string, LogRow>()
   const stages = new Map<string, StageRow>()
@@ -152,5 +165,13 @@ export function groupLogs(logs: AdminLog[]): LogRow[] {
       if (id) requests.set(id, next)
     }
   }
-  return rows
+  return rows.map((row) => {
+    const old = previous.get(row.key)
+    return old !== undefined &&
+      old.events.length === row.events.length &&
+      old.events[0] === row.events[0] &&
+      old.events.at(-1) === row.events.at(-1)
+      ? old
+      : row
+  })
 }

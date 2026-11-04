@@ -41,8 +41,10 @@ type browserProcess struct {
 	profile string
 	lock    *flock.Flock
 	tree    browserTree
-	mu      sync.Mutex
-	closed  bool
+	// cacheDirectory 为账户缓存目录，浏览器退出后把 profile 的启动缓存存回这里
+	cacheDirectory string
+	mu             sync.Mutex
+	closed         bool
 }
 
 // launchBrowser 启动 Camoufox 并返回原生 WebDriver BiDi 端点
@@ -50,8 +52,10 @@ func launchBrowser(ctx context.Context, options Options, config map[string]any) 
 	if _, err := os.Stat(options.ExecutablePath); err != nil {
 		return nil, "", fmt.Errorf("Camoufox 不可用: %w", err)
 	}
+	config = maps.Clone(config)
+	// voices:blockIfNotDefined 为 true 时语音列表只含指纹中的语音，不加入主机语音
+	config["voices:blockIfNotDefined"] = true
 	if runtime.GOOS != "windows" {
-		config = maps.Clone(config)
 		config["AudioContext:maxChannelCount"] = windowsAudioChannels
 		config["AudioContext:sampleRate"] = windowsAudioSampleRate
 		fonts := fontList(config["fonts"])
@@ -73,14 +77,14 @@ func launchBrowser(ctx context.Context, options Options, config map[string]any) 
 		_ = removeProfile(profile, profileLock)
 		return nil, "", err
 	}
-	var display *exec.Cmd
+	display := false
 	launched := false
 	defer func() {
 		if relay != nil && !launched {
 			_ = relay.Close()
 		}
-		if display != nil && !launched {
-			stopVirtualDisplay(display)
+		if display && !launched {
+			releaseVirtualDisplay()
 		}
 	}()
 	prefs, err := firefoxPreferences(proxyValue, options.ProxyBypass)
@@ -89,7 +93,11 @@ func launchBrowser(ctx context.Context, options Options, config map[string]any) 
 		return nil, "", err
 	}
 	if options.Headless && !options.liveView {
-		prefs["layout.frame_rate"] = headlessFrameRate
+		prefs["layout.frame_rate"] = interactiveFrameRate
+		// gfx.display.frame-rate-divisor 为每次分发给页面与合成器的 vsync 间隔数，空闲时页面每秒刷新 1 次
+		prefs["gfx.display.frame-rate-divisor"] = idleFrameDivisor
+		// gfx.webrender.enable-subpixel-aa 为 false 时 WebRender 把字形光栅化到单通道图集，不分配 RGBA 字形图集
+		prefs["gfx.webrender.enable-subpixel-aa"] = false
 	}
 	if options.CacheDirectory != "" {
 		for key, value := range cachePreferences(options.CacheDirectory) {
@@ -104,6 +112,10 @@ func launchBrowser(ctx context.Context, options Options, config map[string]any) 
 		maps.Copy(prefs, windowsFontData.Prefs)
 	}
 	if runtime.GOOS == "darwin" {
+		if err := addWindowsSubstituteNames(filepath.Join(filepath.Dir(filepath.Dir(options.ExecutablePath)), "Resources", "fonts")); err != nil {
+			_ = removeProfile(profile, profileLock)
+			return nil, "", err
+		}
 		// gfx.font_loader.delay 为 0 时 Firefox 同步加载本地化与带字重的字体族名
 		prefs["gfx.font_loader.delay"] = 0
 		if !options.Headless {
@@ -120,18 +132,27 @@ func launchBrowser(ctx context.Context, options Options, config map[string]any) 
 		}
 		environment = append(environment, "FONTCONFIG_FILE="+fontconfig)
 		if options.Headless && os.Getenv("DISPLAY") == "" {
-			var name string
-			display, name, err = startVirtualDisplay()
+			name, err := acquireVirtualDisplay()
 			if err != nil {
 				_ = removeProfile(profile, profileLock)
 				return nil, "", err
 			}
+			display = true
 			environment = append(environment, "DISPLAY="+name)
 		}
 	}
 	if err := writeUserJS(profile, prefs); err != nil {
 		_ = removeProfile(profile, profileLock)
 		return nil, "", err
+	}
+	// Camoufox 的临时目录指向自身 profile
+	environment = append(environment, "TMP="+profile, "TEMP="+profile, "TMPDIR="+profile)
+	if options.Headless && !options.liveView {
+		// MOZ_REMOTE_ALLOW_SYSTEM_ACCESS 让 WebDriver BiDi 访问浏览器界面层，Worker 由此停止标签页的图层绘制
+		environment = append(environment, "MOZ_REMOTE_ALLOW_SYSTEM_ACCESS=1")
+	}
+	if options.CacheDirectory != "" {
+		restoreStartupCache(options.CacheDirectory, profile)
 	}
 
 	// 이 시점부터 relay 와 가상 디스플레이의 정리는 브라우저 시작 함수가 맡는다
@@ -140,8 +161,8 @@ func launchBrowser(ctx context.Context, options Options, config map[string]any) 
 		if relay != nil {
 			_ = relay.Close()
 		}
-		if display != nil {
-			stopVirtualDisplay(display)
+		if display {
+			releaseVirtualDisplay()
 		}
 	}
 	timeout := options.ReadyTimeout
@@ -155,7 +176,7 @@ func launchBrowser(ctx context.Context, options Options, config map[string]any) 
 	command := exec.Command(options.ExecutablePath, browserArguments(options.Headless, profile)...)
 	command.Env = environment
 	configureBrowserProcess(command, options.Headless)
-	return startBrowserCommand(ctx, command, profile, profileLock, options.Log, timeout, cleanup)
+	return startBrowserCommand(ctx, command, profile, profileLock, options.CacheDirectory, options.Log, timeout, cleanup)
 }
 
 // browserArguments 는 Camoufox 실행 인자를 반환한다
@@ -172,7 +193,7 @@ func browserArguments(headless bool, profile string) []string {
 // startBrowserCommand 는 브라우저 명령을 시작하고 BiDi 엔드포인트를 기다린다.
 // profile 이 비어 있지 않으면 종료 때 삭제하며, cleanup 은 시작 실패 또는 프로세스 종료 뒤 정확히 한 번 호출된다
 func startBrowserCommand(
-	ctx context.Context, command *exec.Cmd, profile string, profileLock *flock.Flock, mirror io.Writer, timeout time.Duration, cleanup func(),
+	ctx context.Context, command *exec.Cmd, profile string, profileLock *flock.Flock, cacheDirectory string, mirror io.Writer, timeout time.Duration, cleanup func(),
 ) (*browserProcess, string, error) {
 	fail := func(err error) (*browserProcess, string, error) {
 		if profile != "" {
@@ -199,11 +220,12 @@ func startBrowserCommand(
 		return fail(fmt.Errorf("绑定 Camoufox 进程: %w", err))
 	}
 	process := &browserProcess{
-		command: command,
-		done:    make(chan struct{}),
-		profile: profile,
-		lock:    profileLock,
-		tree:    tree,
+		command:        command,
+		done:           make(chan struct{}),
+		profile:        profile,
+		lock:           profileLock,
+		tree:           tree,
+		cacheDirectory: cacheDirectory,
 	}
 	go func() {
 		waitErr := command.Wait()
@@ -214,8 +236,10 @@ func startBrowserCommand(
 		close(process.done)
 	}()
 	endpoints := make(chan string, 2)
-	go scanBrowserOutput(stdout, mirror, endpoints)
-	go scanBrowserOutput(stderr, mirror, endpoints)
+	output := &browserOutput{}
+	var scanned sync.WaitGroup
+	scanned.Go(func() { scanBrowserOutput(stdout, mirror, endpoints, output) })
+	scanned.Go(func() { scanBrowserOutput(stderr, mirror, endpoints, output) })
 	if timeout <= 0 {
 		timeout = 45 * time.Second
 	}
@@ -229,10 +253,14 @@ func startBrowserCommand(
 		err := process.waitErr
 		process.mu.Unlock()
 		_ = process.Close()
+		scanned.Wait()
 		if err == nil {
 			err = errors.New("Camoufox 在报告 BiDi 端点前退出")
 		}
-		return nil, "", startupExitError(err)
+		if sessionErr := sessionExitError(err); sessionErr != nil {
+			return nil, "", sessionErr
+		}
+		return nil, "", output.exitError(err, command.Path)
 	case <-timer.C:
 		_ = process.Close()
 		return nil, "", fmt.Errorf("Camoufox BiDi 연결 대기 시간 초과: %s", timeout)
@@ -242,16 +270,16 @@ func startBrowserCommand(
 	}
 }
 
-// startupExitError 는 macOS 에서 Camoufox 가 창 시스템 등록 단계에서 SIGABRT 로 종료된 경우를 사용자 세션 필요 오류로 바꾼다.
+// sessionExitError 는 macOS 에서 Camoufox 가 창 시스템 등록 단계에서 SIGABRT 로 종료된 경우 사용자 세션 필요 오류를, 그 밖에는 nil 을 반환한다.
 // 로그인 세션 밖(LaunchDaemon 등)에서 띄운 브라우저는 headless 여도 이 단계에서 중단된다
-func startupExitError(err error) error {
+func sessionExitError(err error) error {
 	var exit *exec.ExitError
 	if runtime.GOOS == "darwin" && errors.As(err, &exit) {
 		if status, ok := exit.Sys().(syscall.WaitStatus); ok && status.Signaled() && status.Signal() == syscall.SIGABRT {
 			return &SessionRequiredError{Reason: "Camoufox 가 macOS 창 시스템에 연결하지 못해 종료되었습니다 (서비스가 사용자 로그인 세션 밖에서 실행 중이면 " + HostSocketEnv + " 로 사용자 세션의 브라우저 호스트를 지정하세요)"}
 		}
 	}
-	return err
+	return nil
 }
 
 // Close 关闭 Camoufox 并删除隔离 profile
@@ -283,6 +311,9 @@ func (process *browserProcess) close(timeout time.Duration, terminate browserPro
 	case <-closeCtx.Done():
 		closeErr = errors.Join(closeErr, fmt.Errorf("等待 Camoufox 进程退出: %w", closeCtx.Err()))
 	}
+	if closeErr == nil && process.profile != "" && process.cacheDirectory != "" {
+		saveStartupCache(process.profile, process.cacheDirectory)
+	}
 	if process.profile != "" {
 		closeErr = errors.Join(closeErr, removeProfile(process.profile, process.lock))
 	}
@@ -296,11 +327,101 @@ func (process *browserProcess) close(timeout time.Duration, terminate browserPro
 	return nil
 }
 
-func scanBrowserOutput(reader io.Reader, mirror io.Writer, endpoints chan<- string) {
+// browserOutput 保存 Camoufox 或 Xvfb 最近输出的行，进程在报告 BiDi 端点或显示号前退出时写入错误
+type browserOutput struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+// browserOutputLines 是退出错误中保留的输出行数
+const browserOutputLines = 20
+
+// missingLibrary 匹配动态链接器报告缺少的共享库名
+var missingLibrary = regexp.MustCompile(`([^\s:]+\.so[^\s:]*): cannot open shared object file`)
+
+func (output *browserOutput) add(line string) {
+	output.mu.Lock()
+	defer output.mu.Unlock()
+	output.lines = append(output.lines, line)
+	if len(output.lines) > browserOutputLines {
+		output.lines = output.lines[1:]
+	}
+}
+
+// exitError 在 err 后附上 Camoufox 最近的输出；输出报告缺少系统运行库时只写明 executable 缺少的全部系统库，Debian 系发行版另附安装命令
+func (output *browserOutput) exitError(err error, executable string) error {
+	output.mu.Lock()
+	defer output.mu.Unlock()
+	if len(output.lines) == 0 {
+		return err
+	}
+	text := strings.Join(output.lines, "\n")
+	reported := missingLibrary.FindAllStringSubmatch(text, -1)
+	if len(reported) == 0 {
+		return fmt.Errorf("Camoufox 在报告 BiDi 端点前退出（%w）：%s", err, text)
+	}
+	libraries := missingLibraries(executable)
+	for _, match := range reported {
+		if !slices.Contains(libraries, match[1]) {
+			libraries = append(libraries, match[1])
+		}
+	}
+	if command := runtimeInstallCommand(); command != "" {
+		return fmt.Errorf("Camoufox 缺少系统运行库 %s，执行 %s 后重试（%w）", strings.Join(libraries, ", "), command, err)
+	}
+	return fmt.Errorf("Camoufox 缺少系统运行库 %s，安装提供这些库的系统包后重试（%w）", strings.Join(libraries, ", "), err)
+}
+
+// lddMissing 匹配 ldd 报告找不到的共享库名
+var lddMissing = regexp.MustCompile(`(?m)^\s*(\S+) => not found`)
+
+// missingLibraries 以 ldd 检查 Camoufox 主程序与 dependentlibs.list 列出的随包库，随包库从 Camoufox 目录解析，返回系统缺少的全部共享库
+func missingLibraries(executable string) []string {
+	directory := filepath.Dir(executable)
+	targets := []string{executable}
+	if list, err := os.ReadFile(filepath.Join(directory, "dependentlibs.list")); err == nil {
+		for _, name := range strings.Fields(string(list)) {
+			targets = append(targets, filepath.Join(directory, name))
+		}
+	}
+	command := exec.Command("ldd", targets...)
+	command.Env = append(os.Environ(), "LD_LIBRARY_PATH="+directory)
+	report, _ := command.Output()
+	var libraries []string
+	for _, match := range lddMissing.FindAllStringSubmatch(string(report), -1) {
+		if !slices.Contains(libraries, match[1]) {
+			libraries = append(libraries, match[1])
+		}
+	}
+	slices.Sort(libraries)
+	return libraries
+}
+
+// aptRuntimePackages 是 Debian 与 Ubuntu 上提供 Camoufox 运行库与 Xvfb 的依赖表达式，ALSA 库自 Ubuntu 24.04 与 Debian 13 起由 libasound2t64 提供
+const aptRuntimePackages = "libgtk-3-0, libasound2t64 | libasound2, libx11-xcb1, xvfb"
+
+// debianRelease 匹配 /etc/os-release 中 Debian 系发行版的 ID 或 ID_LIKE
+var debianRelease = regexp.MustCompile(`(?m)^ID(_LIKE)?=.*\b(debian|ubuntu)\b`)
+
+// runtimeInstallCommand 返回本机安装 Camoufox 运行库与 Xvfb 的命令，不是 Debian 系发行版时返回空串
+func runtimeInstallCommand() string {
+	release, err := os.ReadFile("/etc/os-release")
+	if err != nil || !debianRelease.Match(release) {
+		return ""
+	}
+	sudo := "sudo "
+	if os.Geteuid() == 0 {
+		sudo = ""
+	}
+	return sudo + "apt-get update && " + sudo + `apt-get satisfy -y "` + aptRuntimePackages + `"`
+}
+
+func scanBrowserOutput(reader io.Reader, mirror io.Writer, endpoints chan<- string, output *browserOutput) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
+		output.add(line)
 		if mirror != nil {
 			_, _ = fmt.Fprintln(mirror, line)
 		}
@@ -322,9 +443,6 @@ func normalizeBiDiEndpoint(endpoint string) string {
 	return endpoint
 }
 
-// headlessFrameRate 为无头 Worker 的页面刷新帧率
-const headlessFrameRate = 1
-
 // windowsScrollbarStyle 为 Firefox 非原生主题中 Windows 10 滚动条样式的取值
 const windowsScrollbarStyle = 4
 
@@ -340,6 +458,12 @@ const windowsChromeHeight = 57
 // windowsStorageLimit 为使站点存储配额取 Firefox 上限 10 GiB 的全局存储上限，单位 KB
 const windowsStorageLimit = 50 << 20
 
+// hostChromeHeight 为 macOS 与 Linux 版 Camoufox 窗口中浏览器界面占用的高度
+const hostChromeHeight = 51
+
+// windowsWindowPosition 为 Windows 版按 browser.xhtml 的 screenX、screenY 放置主窗口的坐标
+const windowsWindowPosition = 4
+
 // windowsFontconfig 在 profile 中写入只加载 Camoufox 发行包 Windows 字体并带 Windows 字体替换表的 fontconfig 配置并返回其路径
 func windowsFontconfig(executablePath string, profile string) (string, error) {
 	directory := filepath.Dir(executablePath)
@@ -350,6 +474,8 @@ func windowsFontconfig(executablePath string, profile string) (string, error) {
 	content := strings.ReplaceAll(string(data), `<dir prefix="cwd">fonts</dir>`, "<dir>"+filepath.Join(directory, "fonts", "windows")+"</dir>")
 	content = strings.ReplaceAll(content, "<const>hintfull</const>", "<const>hintslight</const>")
 	var substitutes strings.Builder
+	// fantasy 族取 Windows 版 Firefox 的平台默认字体 Arial
+	substitutes.WriteString("\t<alias binding=\"same\"><family>fantasy</family><prefer><family>Arial</family></prefer></alias>\n")
 	for _, alias := range slices.Sorted(maps.Keys(windowsFontData.Substitutes)) {
 		fmt.Fprintf(&substitutes, `	<match target="pattern"><test qual="any" name="family"><string>%s</string></test><edit name="family" mode="assign" binding="same"><string>%s</string></edit></match>`+"\n", alias, windowsFontData.Substitutes[alias])
 	}
@@ -368,10 +494,46 @@ var xvfbArguments = []string{
 	"-extension", "XVideo-MotionCompensation", "-extension", "XINERAMA", "-fp", "built-ins", "-nocursor", "-br",
 }
 
+// virtualDisplay 是本进程全部无头 Camoufox 共用的 Xvfb 与使用中的浏览器数
+var virtualDisplay struct {
+	sync.Mutex
+	command *exec.Cmd
+	name    string
+	users   int
+}
+
+// acquireVirtualDisplay 返回共用 Xvfb 的显示名，没有浏览器在用时启动 Xvfb
+func acquireVirtualDisplay() (string, error) {
+	virtualDisplay.Lock()
+	defer virtualDisplay.Unlock()
+	if virtualDisplay.users == 0 {
+		command, name, err := startVirtualDisplay()
+		if err != nil {
+			return "", err
+		}
+		virtualDisplay.command, virtualDisplay.name = command, name
+	}
+	virtualDisplay.users++
+	return virtualDisplay.name, nil
+}
+
+// releaseVirtualDisplay 释放一次共用 Xvfb，最后一个浏览器释放时结束 Xvfb
+func releaseVirtualDisplay() {
+	virtualDisplay.Lock()
+	defer virtualDisplay.Unlock()
+	virtualDisplay.users--
+	if virtualDisplay.users == 0 {
+		stopVirtualDisplay(virtualDisplay.command)
+	}
+}
+
 // startVirtualDisplay 启动供无头 Camoufox 使用 GLX 的 Xvfb，返回进程与显示名
 func startVirtualDisplay() (*exec.Cmd, string, error) {
 	path, err := exec.LookPath("Xvfb")
 	if err != nil {
+		if command := runtimeInstallCommand(); command != "" {
+			return nil, "", fmt.Errorf("没有 DISPLAY 时 Camoufox 需要 Xvfb，执行 %s 后重试: %w", command, err)
+		}
 		return nil, "", fmt.Errorf("没有 DISPLAY 时 Camoufox 需要 Xvfb: %w", err)
 	}
 	reader, writer, err := os.Pipe()
@@ -382,15 +544,30 @@ func startVirtualDisplay() (*exec.Cmd, string, error) {
 	command := exec.Command(path, xvfbArguments...)
 	command.ExtraFiles = []*os.File{writer}
 	command.Env = append(os.Environ(), "__GLX_VENDOR_LIBRARY_NAME=mesa", "LIBGL_ALWAYS_SOFTWARE=1")
+	stderr, err := command.StderrPipe()
+	if err != nil {
+		_ = writer.Close()
+		return nil, "", err
+	}
 	err = command.Start()
 	_ = writer.Close()
 	if err != nil {
 		return nil, "", fmt.Errorf("启动 Xvfb: %w", err)
 	}
+	output := &browserOutput{}
+	drained := make(chan struct{})
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			output.add(scanner.Text())
+		}
+		close(drained)
+	}()
 	number, err := bufio.NewReader(reader).ReadString('\n')
 	if err != nil {
+		<-drained
 		stopVirtualDisplay(command)
-		return nil, "", fmt.Errorf("读取 Xvfb 显示号: %w", err)
+		return nil, "", fmt.Errorf("Xvfb 在报告显示号前退出：%s", strings.Join(output.lines, "\n"))
 	}
 	return command, ":" + strings.TrimSpace(number), nil
 }
@@ -422,6 +599,17 @@ func firefoxPreferences(proxyValue, bypass string) (map[string]any, error) {
 		"devtools.debugger.remote-enabled":  true,
 		"browser.shell.checkDefaultBrowser": false,
 		"webgl.force-enabled":               true,
+		// extensions.webextensions.remote 为 false 时内置扩展在主进程运行，不单独启动扩展进程
+		"extensions.webextensions.remote": false,
+		// network.process.enabled 为 false 时网络在主进程运行，不单独启动 socket 进程
+		"network.process.enabled": false,
+		// media.rdd-process.enabled 与 media.utility-process.enabled 为 false 时不单独启动 rdd 与媒体 utility 进程
+		"media.rdd-process.enabled":     false,
+		"media.utility-process.enabled": false,
+		// javascript.options.mem.nursery.max_kb 为 SpiderMonkey 新生代的上限
+		"javascript.options.mem.nursery.max_kb": 4096,
+		// gfx.webrender.max-shared-surface-size 为 WebRender 共享渲染目标的边长上限
+		"gfx.webrender.max-shared-surface-size": 512,
 	}
 	proxyValue = strings.TrimSpace(proxyValue)
 	if proxyValue == "" {

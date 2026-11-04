@@ -1,13 +1,12 @@
 <script setup lang="ts" generic="Language extends string">
-import { vTooltip } from '@/playground/ui/tooltip'
-import { computed, ref } from 'vue'
-import hljs from 'highlight.js/lib/common'
-import { useConsole } from '@/console'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { useI18n } from '@/i18n'
 import UiDialog from '@/playground/ui/UiDialog.vue'
 import UiIcon from '@/playground/ui/UiIcon.vue'
 import UiSelect from '@/playground/ui/UiSelect.vue'
+import { copyToClipboard } from './clipboard'
 import type { CodeOption } from './code'
+import { highlightCode } from './highlight'
 
 const props = defineProps<{
   options: CodeOption<Language>[]
@@ -16,32 +15,27 @@ const props = defineProps<{
 }>()
 const open = defineModel<boolean>('open', { required: true })
 const { t } = useI18n()
-const { showNotice } = useConsole()
-const language = ref<string>(props.options[0]?.value ?? '')
-const option = computed(
-  () => props.options.find((item) => item.value === language.value) ?? props.options[0],
+const language = ref<string>(props.options[0]!.value)
+const option = computed(() => props.options.find((item) => item.value === language.value)!)
+const text = computed(() => props.code(option.value.value))
+// highlighted 是共用 Worker 返回的高亮结果与对应原文，结果返回前显示原文
+const highlighted = shallowRef<{ text: string; html: string }>()
+watch(
+  () => (open.value ? ([text.value, option.value.highlight] as const) : undefined),
+  async (source) => {
+    if (source === undefined) return
+    const html = await highlightCode(...source)
+    if (source[0] === text.value) highlighted.value = { text: source[0], html }
+  },
+  { immediate: true },
 )
-const text = computed(() => (option.value ? props.code(option.value.value) : ''))
-const highlighted = computed(
-  () =>
-    hljs.highlight(text.value, {
-      language: option.value?.highlight ?? 'plaintext',
-      ignoreIllegals: true,
-    }).value,
-)
-
-// copy 复制示例代码
-async function copy(): Promise<void> {
-  await navigator.clipboard.writeText(text.value)
-  showNotice(t('pg.copied'), 'success')
-}
 
 // download 下载示例代码
 function download(): void {
   const url = URL.createObjectURL(new Blob([text.value], { type: 'text/plain' }))
   const link = document.createElement('a')
   link.href = url
-  link.download = option.value?.file ?? 'code.txt'
+  link.download = option.value.file
   link.click()
   URL.revokeObjectURL(url)
 }
@@ -85,13 +79,15 @@ function download(): void {
           <UiIcon name="developerGuide" :size="20" />
         </a>
       </div>
-      <pre class="code-body"><code class="hljs" v-html="highlighted"></code></pre>
+      <pre
+        class="code-body"
+      ><code v-if="highlighted?.text === text" class="hljs" v-html="highlighted.html"></code><code v-else class="hljs">{{ text }}</code></pre>
     </div>
     <template #actions>
       <button type="button" ms-button class="ms-button-borderless" @click="open = false">
         {{ t('common.close') }}
       </button>
-      <button type="button" ms-button class="ms-button-primary" @click="copy">
+      <button type="button" ms-button class="ms-button-primary" @click="copyToClipboard(text)">
         {{ t('pg.copy') }}
       </button>
     </template>

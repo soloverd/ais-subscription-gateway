@@ -3,12 +3,10 @@ package chromeauth
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"crypto/hmac"
+	"crypto/hpke"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
@@ -74,7 +72,7 @@ type multiloginResponse struct {
 }
 
 type deviceBindingKey interface {
-	PublicKey() (*ecdsa.PublicKey, []byte, error)
+	PublicKey() ([]byte, error)
 	SignSHA256([]byte) ([]byte, error)
 	Close()
 }
@@ -161,7 +159,7 @@ func acceptLanguageHeader(languages string) string {
 	return header.String()
 }
 
-// fetchGoogleCookies 用 refresh token 经 OAuthMultilogin 取得 Google Cookie，有设备绑定密钥时走 DBSC 挑战与 HPKE 解密，没有时一次 MultiBearer 请求取得明文 Cookie
+// fetchGoogleCookies 用 refresh token 经 OAuthMultilogin 取得 Google Cookie，有设备绑定密钥时走 DBSC 挑战与 HPKE 解密
 func fetchGoogleCookies(ctx context.Context, identity chromeIdentity, gaiaID string, token string, wrappedKey []byte, proxyURL string) ([]multiloginCookie, error) {
 	client, err := newOAuthClient(proxyURL)
 	if err != nil {
@@ -196,7 +194,7 @@ func fetchBoundCookies(ctx context.Context, client tls_client.HttpClient, identi
 		return nil, err
 	}
 	defer bindingKey.Close()
-	publicKey, spki, err := bindingKey.PublicKey()
+	spki, err := bindingKey.PublicKey()
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +212,7 @@ func fetchBoundCookies(ctx context.Context, client tls_client.HttpClient, identi
 	if err != nil {
 		return nil, fmt.Errorf("生成 HPKE 临时密钥: %w", err)
 	}
-	assertion, err := createAssertion(bindingKey, publicKey, spki, challenge, ephemeralPrivateKey.PublicKey().Bytes())
+	assertion, err := createAssertion(bindingKey, spki, challenge, ephemeralPrivateKey.PublicKey().Bytes())
 	if err != nil {
 		return nil, err
 	}
@@ -353,7 +351,7 @@ func createTinkHPKEKeyset(publicKey []byte) []byte {
 	return appendBytesField(keyset, 2, key)
 }
 
-func createAssertion(bindingKey deviceBindingKey, publicKey *ecdsa.PublicKey, spki []byte, challenge string, ephemeralPublicKey []byte) (string, error) {
+func createAssertion(bindingKey deviceBindingKey, spki []byte, challenge string, ephemeralPublicKey []byte) (string, error) {
 	header := struct {
 		Algorithm string `json:"alg"`
 		Type      string `json:"typ"`
@@ -387,96 +385,23 @@ func createAssertion(bindingKey deviceBindingKey, publicKey *ecdsa.PublicKey, sp
 	if err != nil {
 		return "", err
 	}
-	if len(signature) != 64 {
-		return "", fmt.Errorf("NCrypt ECDSA 签名长度异常")
-	}
-	digest := sha256.Sum256([]byte(signingInput))
-	r := new(big.Int).SetBytes(signature[:32])
-	s := new(big.Int).SetBytes(signature[32:])
-	if !ecdsa.Verify(publicKey, digest[:], r, s) {
-		return "", fmt.Errorf("NCrypt ECDSA 签名校验失败")
-	}
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature), nil
 }
 
 func hpkeOpen(privateKey *ecdh.PrivateKey, encodedValue string) (string, error) {
 	encrypted, err := base64.RawURLEncoding.DecodeString(encodedValue)
-	if err != nil || len(encrypted) <= 48 {
+	if err != nil {
 		return "", fmt.Errorf("OAuthMultilogin Cookie 密文格式异常")
 	}
-	encapsulatedKey := encrypted[:32]
-	senderPublicKey, err := ecdh.X25519().NewPublicKey(encapsulatedKey)
+	recipientKey, err := hpke.NewDHKEMPrivateKey(privateKey)
 	if err != nil {
-		return "", fmt.Errorf("解析 HPKE 封装密钥: %w", err)
+		return "", fmt.Errorf("创建 HPKE 接收密钥: %w", err)
 	}
-	sharedDH, err := privateKey.ECDH(senderPublicKey)
-	if err != nil {
-		return "", fmt.Errorf("计算 HPKE 共享密钥: %w", err)
-	}
-	kemSuite := append([]byte("KEM"), 0, 0x20)
-	hpkeSuite := append([]byte("HPKE"), 0, 0x20, 0, 1, 0, 1)
-	eaePRK := labeledExtract(nil, kemSuite, []byte("eae_prk"), sharedDH)
-	kemContext := append(append([]byte{}, encapsulatedKey...), privateKey.PublicKey().Bytes()...)
-	sharedSecret := labeledExpand(eaePRK, kemSuite, []byte("shared_secret"), kemContext, 32)
-	pskIDHash := labeledExtract(nil, hpkeSuite, []byte("psk_id_hash"), nil)
-	infoHash := labeledExtract(nil, hpkeSuite, []byte("info_hash"), nil)
-	keyScheduleContext := append(append([]byte{0}, pskIDHash...), infoHash...)
-	secret := labeledExtract(sharedSecret, hpkeSuite, []byte("secret"), nil)
-	key := labeledExpand(secret, hpkeSuite, []byte("key"), keyScheduleContext, 16)
-	nonce := labeledExpand(secret, hpkeSuite, []byte("base_nonce"), keyScheduleContext, 12)
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return "", fmt.Errorf("创建 HPKE AES 解密器: %w", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", fmt.Errorf("创建 HPKE GCM 解密器: %w", err)
-	}
-	plaintext, err := gcm.Open(nil, nonce, encrypted[32:], []byte{})
+	plaintext, err := hpke.Open(recipientKey, hpke.HKDFSHA256(), hpke.AES128GCM(), nil, encrypted)
 	if err != nil {
 		return "", fmt.Errorf("OAuthMultilogin Cookie 解密失败")
 	}
 	return string(plaintext), nil
-}
-
-func labeledExtract(salt []byte, suite []byte, label []byte, input []byte) []byte {
-	material := append([]byte("HPKE-v1"), suite...)
-	material = append(material, label...)
-	material = append(material, input...)
-	return hkdfExtract(salt, material)
-}
-
-func labeledExpand(key []byte, suite []byte, label []byte, info []byte, length int) []byte {
-	labeledInfo := make([]byte, 2)
-	binary.BigEndian.PutUint16(labeledInfo, uint16(length))
-	labeledInfo = append(labeledInfo, []byte("HPKE-v1")...)
-	labeledInfo = append(labeledInfo, suite...)
-	labeledInfo = append(labeledInfo, label...)
-	labeledInfo = append(labeledInfo, info...)
-	return hkdfExpand(key, labeledInfo, length)
-}
-
-func hkdfExtract(salt []byte, input []byte) []byte {
-	if len(salt) == 0 {
-		salt = make([]byte, sha256.Size)
-	}
-	hash := hmac.New(sha256.New, salt)
-	hash.Write(input)
-	return hash.Sum(nil)
-}
-
-func hkdfExpand(key []byte, info []byte, length int) []byte {
-	result := make([]byte, 0, length)
-	block := []byte(nil)
-	for counter := byte(1); len(result) < length; counter++ {
-		hash := hmac.New(sha256.New, key)
-		hash.Write(block)
-		hash.Write(info)
-		hash.Write([]byte{counter})
-		block = hash.Sum(nil)
-		result = append(result, block...)
-	}
-	return result[:length]
 }
 
 func appendBytesField(output []byte, number int, value []byte) []byte {
@@ -498,19 +423,13 @@ func appendVarint(output []byte, value uint64) []byte {
 	return append(output, byte(value))
 }
 
-func parsePublicKeyBlob(blob []byte) (*ecdsa.PublicKey, []byte, error) {
+func parsePublicKeyBlob(blob []byte) ([]byte, error) {
 	if len(blob) != 72 || binary.LittleEndian.Uint32(blob[4:8]) != 32 {
-		return nil, nil, fmt.Errorf("NCrypt ECDSA 公钥格式异常")
+		return nil, fmt.Errorf("NCrypt ECDSA 公钥格式异常")
 	}
-	x := new(big.Int).SetBytes(blob[8:40])
-	y := new(big.Int).SetBytes(blob[40:72])
-	if !elliptic.P256().IsOnCurve(x, y) {
-		return nil, nil, fmt.Errorf("NCrypt ECDSA 公钥曲线异常")
-	}
-	publicKey := &ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}
-	spki, err := x509.MarshalPKIXPublicKey(publicKey)
+	spki, err := x509.MarshalPKIXPublicKey(&ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(blob[8:40]), Y: new(big.Int).SetBytes(blob[40:72])})
 	if err != nil {
-		return nil, nil, fmt.Errorf("编码 NCrypt ECDSA 公钥: %w", err)
+		return nil, fmt.Errorf("编码 NCrypt ECDSA 公钥: %w", err)
 	}
-	return publicKey, spki, nil
+	return spki, nil
 }

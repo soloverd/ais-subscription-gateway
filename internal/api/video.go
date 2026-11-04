@@ -34,7 +34,7 @@ type geminiVideoRequest struct {
 	} `json:"parameters"`
 }
 
-// geminiVideoImageInput 是 Veo 帧图片，接受 Gemini API 的 bytesBase64Encoded 与 Part 形式的 inlineData、fileData
+// geminiVideoImageInput 是视频帧图片，接受 Gemini API 的 bytesBase64Encoded 与 Part 形式的 inlineData、fileData
 type geminiVideoImageInput struct {
 	Bytes           string                 `json:"bytesBase64Encoded"`
 	BytesSnake      string                 `json:"bytes_base64_encoded"`
@@ -46,7 +46,7 @@ type geminiVideoImageInput struct {
 	FileDataSnake   *geminiVideoFileData   `json:"file_data"`
 }
 
-// geminiVideoReferenceImage 是 Veo 参考图
+// geminiVideoReferenceImage 是视频参考图
 type geminiVideoReferenceImage struct {
 	Image *geminiVideoImageInput `json:"image"`
 }
@@ -57,41 +57,11 @@ type geminiVideoInlineData struct {
 	Data          string `json:"data"`
 }
 
-func (b *geminiVideoInlineData) MIME() string {
-	if b == nil {
-		return ""
-	}
-	if b.MIMEType != "" {
-		return b.MIMEType
-	}
-	return b.MIMETypeSnake
-}
-
 type geminiVideoFileData struct {
 	MIMEType      string `json:"mimeType"`
 	MIMETypeSnake string `json:"mime_type"`
 	FileURI       string `json:"fileUri"`
 	FileURISnake  string `json:"file_uri"`
-}
-
-func (f *geminiVideoFileData) MIME() string {
-	if f == nil {
-		return ""
-	}
-	if f.MIMEType != "" {
-		return f.MIMEType
-	}
-	return f.MIMETypeSnake
-}
-
-func (f *geminiVideoFileData) URI() string {
-	if f == nil {
-		return ""
-	}
-	if f.FileURI != "" {
-		return f.FileURI
-	}
-	return f.FileURISnake
 }
 
 type openAIVideoRequest struct {
@@ -113,20 +83,23 @@ func (s *server) handleGeminiVideoCreate(w http.ResponseWriter, r *http.Request,
 		writeGeminiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
 		return
 	}
-	videoRequest, count, err := request.toVideoRequest(model)
+	videoRequests, count, err := request.toVideoRequests(model)
 	if err != nil {
 		writeGeminiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
 		return
 	}
-	videoRequest = normalizeVideoDefaults(videoRequest)
-	ids := make([]string, 0, count)
-	for range count {
-		operation, createErr := service.GenerateVideo(r.Context(), videoRequest)
-		if createErr != nil {
-			err = createErr
-			break
+	ids := make([]string, 0, count*len(videoRequests))
+create:
+	for _, videoRequest := range videoRequests {
+		videoRequest = normalizeVideoDefaults(videoRequest)
+		for range count {
+			operation, createErr := service.GenerateVideo(r.Context(), videoRequest)
+			if createErr != nil {
+				err = createErr
+				break create
+			}
+			ids = append(ids, operation.ID)
 		}
-		ids = append(ids, operation.ID)
 	}
 	if len(ids) == 0 {
 		if shouldWriteRequestError(r, err) {
@@ -134,7 +107,7 @@ func (s *server) handleGeminiVideoCreate(w http.ResponseWriter, r *http.Request,
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"name": "operations/" + strings.Join(ids, videoOperationSeparator)})
+	writeJSON(w, http.StatusOK, officialOrder("gemini", map[string]any{"name": "operations/" + strings.Join(ids, videoOperationSeparator)}))
 }
 
 // maxVideoCount 是 Gemini numberOfVideos 与 sampleCount 的上限
@@ -143,10 +116,10 @@ const maxVideoCount = 4
 // videoOperationSeparator 连接同一 Gemini 操作内各上游视频任务的 ID
 const videoOperationSeparator = "~"
 
-// toVideoRequest 返回单个上游视频任务的请求与要创建的任务数
-func (request geminiVideoRequest) toVideoRequest(model string) (aistudio.VideoRequest, int, error) {
-	if len(request.Instances) != 1 {
-		return aistudio.VideoRequest{}, 0, fmt.Errorf("instances must contain one instance")
+// toVideoRequests 返回每个 instance 的上游视频任务请求与每个 instance 要创建的任务数
+func (request geminiVideoRequest) toVideoRequests(model string) ([]aistudio.VideoRequest, int, error) {
+	if len(request.Instances) == 0 {
+		return nil, 0, fmt.Errorf("instances is required")
 	}
 	count := request.Parameters.NumberOfVideos
 	if count == 0 {
@@ -156,53 +129,56 @@ func (request geminiVideoRequest) toVideoRequest(model string) (aistudio.VideoRe
 		count = 1
 	}
 	if count < 1 || count > maxVideoCount {
-		return aistudio.VideoRequest{}, 0, fmt.Errorf("numberOfVideos must be between 1 and %d", maxVideoCount)
+		return nil, 0, fmt.Errorf("numberOfVideos must be between 1 and %d", maxVideoCount)
 	}
 	duration, err := videoDuration(request.Parameters.Duration)
 	if err != nil {
-		return aistudio.VideoRequest{}, 0, err
+		return nil, 0, err
 	}
-	instance := request.Instances[0]
 	negative := request.Parameters.NegativePrompt
 	if negative == "" {
 		negative = request.Parameters.NegativePromptSnake
 	}
-	result := aistudio.VideoRequest{
-		Model: model, Prompt: instance.Prompt, NegativePrompt: negative,
-		AspectRatio: request.Parameters.AspectRatio, DurationSeconds: duration, Resolution: request.Parameters.Resolution,
-	}
-	if instance.Image != nil {
-		if result.StartImage, err = geminiVideoImage(instance.Image); err != nil {
-			return aistudio.VideoRequest{}, 0, fmt.Errorf("image: %w", err)
+	results := make([]aistudio.VideoRequest, 0, len(request.Instances))
+	for index, instance := range request.Instances {
+		result := aistudio.VideoRequest{
+			Model: model, Prompt: instance.Prompt, NegativePrompt: negative,
+			AspectRatio: request.Parameters.AspectRatio, DurationSeconds: duration, Resolution: request.Parameters.Resolution,
 		}
-	}
-	last := instance.LastFrame
-	if last == nil {
-		last = instance.LastFrameSnake
-	}
-	if last != nil {
-		if result.LastImage, err = geminiVideoImage(last); err != nil {
-			return aistudio.VideoRequest{}, 0, fmt.Errorf("lastFrame: %w", err)
+		if instance.Image != nil {
+			if result.StartImage, err = geminiVideoImage(instance.Image); err != nil {
+				return nil, 0, fmt.Errorf("instances[%d].image: %w", index, err)
+			}
 		}
-	}
-	references := instance.ReferenceImages
-	if references == nil {
-		references = instance.ReferenceImagesSnake
-	}
-	for index, reference := range references {
-		if reference.Image == nil {
-			return aistudio.VideoRequest{}, 0, fmt.Errorf("referenceImages[%d].image is required", index)
+		last := instance.LastFrame
+		if last == nil {
+			last = instance.LastFrameSnake
 		}
-		image, err := geminiVideoImage(reference.Image)
-		if err != nil {
-			return aistudio.VideoRequest{}, 0, fmt.Errorf("referenceImages[%d].image: %w", index, err)
+		if last != nil {
+			if result.LastImage, err = geminiVideoImage(last); err != nil {
+				return nil, 0, fmt.Errorf("instances[%d].lastFrame: %w", index, err)
+			}
 		}
-		result.ReferenceImages = append(result.ReferenceImages, image)
+		references := instance.ReferenceImages
+		if references == nil {
+			references = instance.ReferenceImagesSnake
+		}
+		for reference, item := range references {
+			if item.Image == nil {
+				return nil, 0, fmt.Errorf("instances[%d].referenceImages[%d].image is required", index, reference)
+			}
+			image, err := geminiVideoImage(item.Image)
+			if err != nil {
+				return nil, 0, fmt.Errorf("instances[%d].referenceImages[%d].image: %w", index, reference, err)
+			}
+			result.ReferenceImages = append(result.ReferenceImages, image)
+		}
+		if strings.TrimSpace(result.Prompt) == "" && result.StartImage == nil && result.LastImage == nil && len(result.ReferenceImages) == 0 {
+			return nil, 0, fmt.Errorf("instances[%d] must contain a prompt or an image", index)
+		}
+		results = append(results, result)
 	}
-	if strings.TrimSpace(result.Prompt) == "" && result.StartImage == nil && result.LastImage == nil && len(result.ReferenceImages) == 0 {
-		return aistudio.VideoRequest{}, 0, fmt.Errorf("instances[0] must contain a prompt or an image")
-	}
-	return result, count, nil
+	return results, count, nil
 }
 
 func geminiVideoImage(input *geminiVideoImageInput) (*aistudio.VideoImage, error) {
@@ -224,25 +200,25 @@ func geminiVideoImage(input *geminiVideoImageInput) (*aistudio.VideoImage, error
 		return nil, fmt.Errorf("image must contain exactly one of bytesBase64Encoded, inlineData or fileData")
 	}
 	if inline != nil {
-		mime := inline.MIME()
-		if mime == "" || inline.Data == "" {
+		mimeType := cmp.Or(inline.MIMEType, inline.MIMETypeSnake)
+		if mimeType == "" || inline.Data == "" {
 			return nil, fmt.Errorf("image requires mimeType and data")
 		}
 		data, err := decodeBase64Flexible(inline.Data)
 		if err != nil {
 			return nil, fmt.Errorf("image.inlineData.data: %w", err)
 		}
-		mimeType, data := normalizeImagePayload(mime, data)
+		mimeType, data = normalizeImagePayload(mimeType, data)
 		return &aistudio.VideoImage{InlineData: &aistudio.Blob{MIME: mimeType, Data: data}}, nil
 	}
 	if file != nil {
-		return &aistudio.VideoImage{File: &aistudio.FileRef{ID: file.URI(), MIME: file.MIME()}}, nil
+		return &aistudio.VideoImage{File: &aistudio.FileRef{ID: cmp.Or(file.FileURI, file.FileURISnake), MIME: cmp.Or(file.MIMEType, file.MIMETypeSnake)}}, nil
 	}
 	return nil, fmt.Errorf("image requires bytesBase64Encoded, inlineData or fileData")
 }
 
 func videoDuration(raw json.RawMessage) (int, error) {
-	if len(raw) == 0 || string(raw) == "null" {
+	if !rawJSONConfigured(raw) {
 		return 0, nil
 	}
 	var value string
@@ -294,13 +270,17 @@ func (s *server) handleGeminiVideoOperation(w http.ResponseWriter, r *http.Reque
 	}
 	response := map[string]any{"name": "operations/" + operationID, "done": done}
 	if done && failure != nil {
-		response["error"] = map[string]any{"code": statusFromError(failure), "message": failure.Error(), "status": geminiErrorStatus(failure)}
+		status := geminiErrorStatus(failure)
+		response["error"] = map[string]any{"code": rpcCodes[status], "message": failure.Error(), "status": status}
 	} else if done && missing != "" {
-		response["error"] = map[string]any{"code": http.StatusNotFound, "message": missing, "status": "NOT_FOUND"}
+		response["error"] = map[string]any{"code": rpcCodes["NOT_FOUND"], "message": missing, "status": "NOT_FOUND"}
 	} else if done {
-		response["response"] = map[string]any{"generateVideoResponse": map[string]any{"generatedSamples": samples}}
+		response["response"] = map[string]any{
+			"@type":                 "type.googleapis.com/google.ai.generativelanguage.v1beta.PredictLongRunningResponse",
+			"generateVideoResponse": map[string]any{"generatedSamples": samples},
+		}
 	}
-	writeJSON(w, http.StatusOK, response)
+	writeJSON(w, http.StatusOK, officialOrder("gemini", response))
 }
 
 func (s *server) handleOpenAIVideoCreate(w http.ResponseWriter, r *http.Request) {
@@ -337,7 +317,7 @@ func (s *server) handleOpenAIVideoCreate(w http.ResponseWriter, r *http.Request)
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, openAIVideoObject(operation))
+	writeJSON(w, http.StatusOK, officialOrder("openai", openAIVideoObject(operation)))
 }
 
 func parseOpenAIVideoRequest(r *http.Request) (openAIVideoRequest, *aistudio.VideoImage, error) {
@@ -417,12 +397,10 @@ func (request openAIVideoRequest) toVideoRequest(image *aistudio.VideoImage) (ai
 
 func openAIVideoSize(size string) (string, string, error) {
 	switch strings.ToLower(strings.TrimSpace(size)) {
-	case "":
-		return "", "", nil
+	case "", "720x1280":
+		return "9:16", "720p", nil
 	case "1280x720":
 		return "16:9", "720p", nil
-	case "720x1280":
-		return "9:16", "720p", nil
 	case "1792x1024", "1920x1080":
 		return "16:9", "1080p", nil
 	case "1024x1792", "1080x1920":
@@ -448,7 +426,7 @@ func (s *server) handleOpenAIVideoGet(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIVideoError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, openAIVideoObject(operation))
+	writeJSON(w, http.StatusOK, officialOrder("openai", openAIVideoObject(operation)))
 }
 
 // handleOpenAIVideoList 按 after、limit 与 order 分页列出视频，页内各对象经上游轮询返回当前状态
@@ -481,7 +459,7 @@ func (s *server) handleOpenAIVideoList(w http.ResponseWriter, r *http.Request) {
 	if len(page) > 0 {
 		body["first_id"], body["last_id"] = page[0].ID, page[len(page)-1].ID
 	}
-	writeJSON(w, http.StatusOK, body)
+	writeJSON(w, http.StatusOK, officialOrder("openai", body))
 }
 
 // handleOpenAIVideoDelete 删除已结束的视频任务及其结果文件
@@ -496,7 +474,7 @@ func (s *server) handleOpenAIVideoDelete(w http.ResponseWriter, r *http.Request)
 		writeOpenAIVideoError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": operationID, "object": "video.deleted", "deleted": true})
+	writeJSON(w, http.StatusOK, officialOrder("openai", map[string]any{"id": operationID, "object": "video.deleted", "deleted": true}))
 }
 
 // writeOpenAIVideoError 写入视频接口错误，视频任务不存在时返回 404
@@ -525,7 +503,14 @@ func openAIVideoObject(operation aistudio.VideoOperation) map[string]any {
 	object := map[string]any{
 		"id": operation.ID, "object": "video", "model": operation.Model,
 		"status": status, "progress": progress, "created_at": operation.CreatedAt.Unix(),
-		"size": operation.Size, "seconds": operation.Seconds,
+		"size": operation.Size, "seconds": operation.Seconds, "prompt": nil,
+		"completed_at": nil, "expires_at": nil, "error": nil, "remixed_from_video_id": nil,
+	}
+	if operation.Prompt != "" {
+		object["prompt"] = operation.Prompt
+	}
+	if operation.CompletedAt != 0 {
+		object["completed_at"] = operation.CompletedAt
 	}
 	if operation.Missing != "" {
 		object["error"] = map[string]any{"code": "video_not_found", "message": operation.Missing}
@@ -563,21 +548,16 @@ func (s *server) handleOpenAIVideoContent(w http.ResponseWriter, r *http.Request
 		}
 		return
 	}
-	mimeType := media.MIME
-	if mimeType == "" {
-		mimeType = "video/mp4"
-	}
-	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Type", cmp.Or(media.MIME, "video/mp4"))
 	w.Header().Set("Content-Disposition", `attachment; filename="video.mp4"`)
-	if media.Size >= 0 {
-		w.Header().Set("Content-Length", strconv.FormatInt(media.Size, 10))
-	}
-	w.WriteHeader(http.StatusOK)
-	_, copyErr := io.Copy(w, media.Body)
-	closeErr := media.Body.Close()
-	if requestErr := errors.Join(copyErr, closeErr); requestErr != nil {
-		SetAccessLogError(r.Context(), requestErr)
-	}
+	writeMediaStream(w, r, media.Body, media.Size)
+}
+
+// rpcCodes 是 google.rpc.Code 名称对应的数值，用于长任务 Operation.error.code
+var rpcCodes = map[string]int{
+	"OK": 0, "CANCELLED": 1, "UNKNOWN": 2, "INVALID_ARGUMENT": 3, "DEADLINE_EXCEEDED": 4, "NOT_FOUND": 5,
+	"ALREADY_EXISTS": 6, "PERMISSION_DENIED": 7, "RESOURCE_EXHAUSTED": 8, "FAILED_PRECONDITION": 9, "ABORTED": 10,
+	"OUT_OF_RANGE": 11, "UNIMPLEMENTED": 12, "INTERNAL": 13, "UNAVAILABLE": 14, "DATA_LOSS": 15, "UNAUTHENTICATED": 16,
 }
 
 func cleanOperationID(value string) string {

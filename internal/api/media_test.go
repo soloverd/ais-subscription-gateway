@@ -20,8 +20,12 @@ func TestGeminiInlineDataCompatibility(t *testing.T) {
 		{name: "data URL", raw: `[{"inlineData":{"mimeType":"application/octet-stream","data":"data:application/octet-stream;base64,+//v"}}]`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			raw, _, err := geminiCamelKeys([]byte(test.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
 			var input []geminiPart
-			if err := json.Unmarshal([]byte(test.raw), &input); err != nil {
+			if err := json.Unmarshal(raw, &input); err != nil {
 				t.Fatal(err)
 			}
 			parts, hasResult, err := mapGeminiParts(input)
@@ -42,7 +46,7 @@ func TestGeminiInlineDataCompatibility(t *testing.T) {
 func TestSpeechWAV(t *testing.T) {
 	pcm := []byte{1, 2, 3, 4}
 	wav := pcmWAV(pcm, 24000, 1)
-	media := aistudio.Media{MIME: "audio/wav", Data: wav}
+	media := aistudio.Blob{MIME: "audio/wav", Data: wav}
 	data, mime, err := encodeSpeechResponse(media, "pcm")
 	if err != nil || !bytes.Equal(data, pcm) || mime != "audio/l16;rate=24000;channels=1" {
 		t.Fatalf("pcm=%v mime=%s err=%v", data, mime, err)
@@ -51,11 +55,11 @@ func TestSpeechWAV(t *testing.T) {
 	if err != nil || !bytes.Equal(data, wav) || mime != "audio/wav" {
 		t.Fatalf("wav mime=%s err=%v", mime, err)
 	}
-	joined, err := joinedAudio([]aistudio.Media{media, media})
+	joined, err := joinedAudio([]aistudio.Blob{media, media})
 	if err != nil || !bytes.Equal(joined.Data, []byte{1, 2, 3, 4, 1, 2, 3, 4}) {
 		t.Fatalf("joined=%v err=%v", joined.Data, err)
 	}
-	if _, err := wavPCM(aistudio.Media{MIME: "audio/wav", Data: wav[:20]}); err == nil {
+	if _, err := wavPCM(aistudio.Blob{MIME: "audio/wav", Data: wav[:20]}); err == nil {
 		t.Fatal("truncated WAV accepted")
 	}
 	content, err := interactionMedia(media, "pcm")

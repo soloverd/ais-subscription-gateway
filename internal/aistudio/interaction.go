@@ -21,11 +21,19 @@ var interactionThinkingLevels = map[int64]int64{4: 1, 1: 2, 2: 3, 3: 4}
 // interactionCancelTimeout 是取消后台任务的期限，包含等待账户请求槽位的时间
 const interactionCancelTimeout = time.Minute
 
-// interactionVideoMIME 表示 Interaction 视频内容的 MIME 枚举
-var interactionVideoMIME = map[int64]string{1: "video/mp4"}
+// interactionMediaMIME 是 content delta 各媒体字段的 MIME 枚举表，与官网前端相同
+var interactionMediaMIME = map[int]interactionMIME{
+	1: {codes: map[int64]string{1: "image/png", 2: "image/jpeg", 3: "image/webp", 4: "image/heic", 5: "image/heif", 7: "image/gif", 8: "image/bmp", 9: "image/tiff"}, unlisted: "image/jpeg"},
+	2: {codes: map[int64]string{1: "audio/wav", 2: "audio/mp3", 3: "audio/aiff", 4: "audio/aac", 5: "audio/ogg", 6: "audio/flac", 7: "audio/mpeg", 8: "audio/m4a", 9: "audio/l16", 10: "audio/s16le", 11: "audio/opus", 12: "audio/alaw", 13: "audio/mulaw"}, unlisted: "audio/wav"},
+	3: {codes: map[int64]string{1: "application/pdf"}, unlisted: "application/pdf"},
+	4: {codes: map[int64]string{1: "video/mp4", 2: "video/mpeg", 3: "video/mpg", 4: "video/mov", 5: "video/avi", 6: "video/x-flv", 7: "video/webm", 8: "video/wmv", 9: "video/3gpp"}, unlisted: "video/mp4"},
+}
 
-// interactionImageMIME 表示 Interaction 图片内容的 MIME 枚举
-var interactionImageMIME = map[int64]string{1: "image/png"}
+// interactionMIME 是一类媒体的 MIME 枚举与枚举缺省或不在表中时的 MIME
+type interactionMIME struct {
+	codes    map[int64]string
+	unlisted string
+}
 
 // interactionStatusHTTP 把流尾 google.rpc 状态码换算为 HTTP 状态
 var interactionStatusHTTP = map[int64]int{
@@ -71,7 +79,7 @@ func EncodeCreateInteractionStreamRequest(request GenerateRequest, defaults Gene
 		}
 	}
 	interaction := make([]any, 54)
-	if system := strings.TrimSpace(request.System); system != "" {
+	if system := strings.TrimSpace(SystemText(request.System)); system != "" {
 		interaction[6] = system
 	}
 	interaction[17] = []any{wireModelName(request.Model), config}
@@ -82,10 +90,7 @@ func EncodeCreateInteractionStreamRequest(request GenerateRequest, defaults Gene
 	} else {
 		interaction[53] = []any{[]any{[]any{nil, nil, nil, video}}}
 	}
-	body, err := json.Marshal([]any{int64(1), int64(1), nil, interaction, nil, int64(1)})
-	if err != nil {
-		return nil, nil, fmt.Errorf("编码 CreateInteractionStream: %w", err)
-	}
+	body, _ := json.Marshal([]any{int64(1), int64(1), nil, interaction, nil, int64(1)})
 	return body, binding, nil
 }
 
@@ -137,7 +142,7 @@ func interactionVideoFormat(config *VideoConfig, resolution string) ([]any, int6
 	return format, task, nil
 }
 
-// encodeInteractionSteps 把规范消息编码为用户 step field 1 与模型 step field 2 交替的 input steps，工具 part 改为文本转录，模型消息的附件移到下一个用户 step
+// encodeInteractionSteps 把规范消息编码为用户 step field 1 与模型 step field 2 交替的 input steps
 func encodeInteractionSteps(contents []Content) ([]any, []Content, bool, error) {
 	type step struct {
 		model bool
@@ -159,12 +164,12 @@ func encodeInteractionSteps(contents []Content) ([]any, []Content, bool, error) 
 		texts := make([]Part, 0, len(content.Parts))
 		for _, part := range content.Parts {
 			switch {
-			case part.VideoMetadata != nil || part.MediaProcessing != "" || part.ProcessingCall != nil || part.ProcessingResult != nil:
+			case part.VideoMetadata != nil || part.MediaProcessing != "" || part.ToolCall != nil || part.ToolResponse != nil:
 				return nil, nil, false, fmt.Errorf("Interaction 模型的 contents[%d] 不接受视频截取、采样、处理方式与处理步骤", index)
 			case part.Thought:
 				continue
 			case part.ExecutableCode != nil || part.CodeExecutionResult != nil:
-				transcript, err := toolPartTranscript(part)
+				transcript, err := ToolPartTranscript(part)
 				if err != nil {
 					return nil, nil, false, fmt.Errorf("Interaction 模型的 contents[%d]: %w", index, err)
 				}
@@ -272,8 +277,15 @@ func (c *Client) generateInteraction(ctx context.Context, request GenerateReques
 	return c.interactionEvents(ctx, request, entry, "CreateInteractionStream", response, nil)
 }
 
-// interactionEvents 解码 Interaction 流并映射为规范事件，aborted 在流读到最终 interaction 之前因调用方取消而结束时调用
-func (c *Client) interactionEvents(ctx context.Context, request GenerateRequest, entry modelEntry, method string, response *RPCResponse, aborted func()) (<-chan Event, error) {
+// interactionTask 是 CreateInteraction 后台任务的上游 interaction ID、所属账户与取消任务的函数
+type interactionTask struct {
+	id      string
+	account string
+	cancel  func()
+}
+
+// interactionEvents 解码 Interaction 流并映射为规范事件；task 为后台任务时结束事件带上 interaction ID 与账户，流在读到最终 interaction 之前因调用方取消而结束时取消任务
+func (c *Client) interactionEvents(ctx context.Context, request GenerateRequest, entry modelEntry, method string, response *RPCResponse, task *interactionTask) (<-chan Event, error) {
 	matcher := newStopSequenceMatcher(request.Config.StopSequences)
 	var stopTokenCount <-chan tokenCountResult
 	cancelTokenCount := context.CancelFunc(func() {})
@@ -302,6 +314,9 @@ func (c *Client) interactionEvents(ctx context.Context, request GenerateRequest,
 				ready <- nil
 			}
 			event.ProviderModel = entry.model.ID
+			if event.Kind == EventFinish && task != nil {
+				event.InteractionID, event.AccountID = task.id, task.account
+			}
 			select {
 			case events <- event:
 				return nil
@@ -309,7 +324,7 @@ func (c *Client) interactionEvents(ctx context.Context, request GenerateRequest,
 				return ctx.Err()
 			}
 		}
-		var output generatedOutputParts
+		var output Output
 		var usage *Event
 		finished := false
 		matchedStopSequence := ""
@@ -327,7 +342,7 @@ func (c *Client) interactionEvents(ctx context.Context, request GenerateRequest,
 					}
 				}
 			default:
-				output.observe(event)
+				output.Add(event)
 			}
 			return send(event)
 		}
@@ -342,8 +357,8 @@ func (c *Client) interactionEvents(ctx context.Context, request GenerateRequest,
 		}
 		var err error
 		defer func() {
-			if !finished && aborted != nil && (ctx.Err() != nil || err != nil) {
-				aborted()
+			if !finished && task != nil && (ctx.Err() != nil || err != nil) {
+				task.cancel()
 			}
 		}()
 		err = DecodeInteractionStream(method, observeStreamActivity(ctx, response.Body), emit)
@@ -488,7 +503,7 @@ func decodeInteractionEvent(method string, raw json.RawMessage, emit func(Event)
 	return true, emit(Event{Kind: EventFinish, FinishReason: "stop"})
 }
 
-// decodeInteractionDelta 解码 content delta：field 1 文本、field 2 图片、field 5 视频、field 6 思考摘要、field 7 思考签名、field 10 引用
+// decodeInteractionDelta 解码 content delta：field 1 文本、field 2 图片、field 3 音频、field 4 文档、field 5 视频、field 6 思考摘要、field 7 思考签名、field 10 引用
 func decodeInteractionDelta(method string, raw json.RawMessage, emit func(Event) error) error {
 	delta, err := rawArray(raw, "$delta", raw)
 	if err != nil || len(delta) < 2 {
@@ -515,22 +530,18 @@ func decodeInteractionDelta(method string, raw json.RawMessage, emit func(Event)
 			if err := emit(Event{Kind: EventText, Text: decoded}); err != nil {
 				return err
 			}
-		case 1, 4:
-			mimes := interactionImageMIME
-			if index == 4 {
-				mimes = interactionVideoMIME
-			}
-			media, err := decodeInteractionMedia(method, value, index, mimes, raw)
+		case 1, 2, 3, 4:
+			media, err := decodeInteractionMedia(method, value, index, raw)
 			if err != nil {
 				return err
 			}
-			if err := emit(Event{Kind: EventMedia, Media: media}); err != nil {
+			if err := emit(Event{Kind: EventMedia, InlineData: media}); err != nil {
 				return err
 			}
 		case 5:
 			text := strings.Join(interactionStrings(value), "")
 			if text != "" {
-				if err := emit(Event{Kind: EventReasoning, Text: text}); err != nil {
+				if err := emit(Event{Kind: EventReasoning, Text: text, Thought: true}); err != nil {
 					return err
 				}
 			}
@@ -591,37 +602,150 @@ func decodeInteractionUsage(method string, raw json.RawMessage, evidence json.Ra
 	return usage, nil
 }
 
-// interactionTaskTools 是官网 Deep Research 创建任务时随请求发送的工具配置
-var interactionTaskTools = []any{[]any{nil, nil, nil, nil, nil, []any{}}, []any{nil, nil, []any{}}}
+// agentTools 按官网的构造编码 CreateInteraction field 8 的工具列表，依次为代码执行、函数声明、Google 搜索与网址读取；请求带有工具列表字段时只用列出的工具，否则在目录 field 82 默认开启的工具上加入请求的工具
+func agentTools(tools Tools, model Model) ([]any, error) {
+	switch {
+	case len(tools.MCPServers) > 0:
+		return nil, fmt.Errorf("agent 不接受 %s 工具", "mcp_server")
+	case len(tools.FileSearch) > 0:
+		return nil, fmt.Errorf("agent 不接受 %s 工具", "file_search")
+	case tools.ComputerUse != nil:
+		return nil, fmt.Errorf("agent 不接受 %s 工具", "computer_use")
+	}
+	code, search, fetch := false, tools.GoogleSearch != nil && tools.GoogleSearch.WebSearch, false
+	for _, name := range tools.Google {
+		switch name {
+		case "code_execution":
+			code = true
+		case "google_search":
+			search = true
+		case "url_context":
+			fetch = true
+		default:
+			return nil, fmt.Errorf("agent 不接受 %s 工具", name)
+		}
+	}
+	if !tools.Explicit {
+		code = code || model.Capabilities["default_capability_code_9"]
+		search = search || model.Capabilities["default_capability_code_12"]
+		fetch = fetch || model.Capabilities["default_capability_code_13"]
+	}
+	var list []any
+	if code {
+		list = append(list, []any{nil, []any{}})
+	}
+	for _, function := range tools.Functions {
+		// Tool field 1 为函数声明：field 1 名称、field 2 说明、field 3 以 Value 表示的参数
+		declaration := []any{function.Name, nil, nil}
+		if function.Description != "" {
+			declaration[1] = function.Description
+		}
+		if len(function.Parameters) > 0 {
+			var parameters any
+			if err := json.Unmarshal(function.Parameters, &parameters); err != nil {
+				return nil, fmt.Errorf("function %q parameters: %w", function.Name, err)
+			}
+			declaration[2] = encodeWireValue(parameters)
+		}
+		list = append(list, []any{declaration})
+	}
+	if search {
+		list = append(list, []any{nil, nil, nil, nil, nil, []any{}})
+	}
+	if fetch {
+		list = append(list, []any{nil, nil, []any{}})
+	}
+	return list, nil
+}
+
+// AgentInput 按官网选取 agent 后台任务实际发送的输入内容：续接上游 interaction 时只取最后一个模型轮之后的内容，否则只取用户内容
+func AgentInput(contents []Content, continued bool) []Content {
+	if continued {
+		for index := len(contents) - 1; index >= 0; index-- {
+			if contents[index].Role == RoleAssistant {
+				return contents[index+1:]
+			}
+		}
+		return contents
+	}
+	return slices.DeleteFunc(slices.Clone(contents), func(content Content) bool { return content.Role != RoleUser })
+}
+
+// deepResearchConfig 返回 Deep Research 的 agent 配置：field 1 思考摘要（1 auto、2 none），field 2 可视化（2 auto、1 off），field 3 协作规划，取值同官网的构造，未设置时为官网默认的 [1,2]
+func deepResearchConfig(config *AgentConfig) []any {
+	value := []any{int64(1), int64(2)}
+	if config == nil {
+		return value
+	}
+	if config.ThinkingSummaries == "none" {
+		value[0] = int64(2)
+	}
+	if config.Visualization == "off" {
+		value[1] = int64(1)
+	}
+	if config.CollaborativePlanning {
+		value = append(value, true)
+	}
+	return value
+}
 
 // EncodeCreateInteractionRequest 编码官网后台 agent 的 CreateInteraction 请求并返回参与 WAA 绑定的文本内容
-func EncodeCreateInteractionRequest(request GenerateRequest) ([]byte, []Content, error) {
-	steps, binding, _, err := encodeInteractionSteps(request.Contents)
+func EncodeCreateInteractionRequest(request GenerateRequest, model Model) ([]byte, []Content, error) {
+	agent := strings.TrimPrefix(strings.TrimSpace(request.Model), "models/")
+	// kind 是该 agent 的 agent_config 类型：带默认模型的 agent 为 antigravity，其余为 deep-research
+	kind := "deep-research"
+	if model.AgentModel != "" {
+		kind = "antigravity"
+	}
+	if config := request.AgentConfig; config != nil && config.Type != kind {
+		return nil, nil, fmt.Errorf("agent_config.type %q 与 agent %s 不匹配，应为 %q", config.Type, agent, kind)
+	}
+	steps, binding, _, err := encodeInteractionSteps(AgentInput(request.Contents, request.PreviousInteractionID != ""))
+	if err != nil {
+		return nil, nil, err
+	}
+	tools, err := agentTools(request.Tools, model)
 	if err != nil {
 		return nil, nil, err
 	}
 	interaction := make([]any, 27)
-	if system := strings.TrimSpace(request.System); system != "" {
+	if system := strings.TrimSpace(SystemText(request.System)); system != "" {
 		interaction[6] = system
 	}
-	interaction[7] = interactionTaskTools
-	// field 19 为 agent 名称与官网固定的 agent 配置
-	interaction[18] = []any{strings.TrimPrefix(strings.TrimSpace(request.Model), "models/"), nil, []any{int64(1), int64(2)}}
-	interaction[26] = []any{steps}
-	body, err := json.Marshal([]any{nil, int64(1), int64(1), interaction, nil, int64(1)})
-	if err != nil {
-		return nil, nil, fmt.Errorf("编码 CreateInteraction: %w", err)
+	if len(tools) > 0 {
+		interaction[7] = tools
 	}
+	// field 17 为续接的上一轮 interaction ID
+	if request.PreviousInteractionID != "" {
+		interaction[16] = request.PreviousInteractionID
+	}
+	// field 19 为 agent 目标：field 1 agent 名称，Deep Research 的 field 3 为 agent 配置
+	target := []any{agent, nil, deepResearchConfig(request.AgentConfig)}
+	if model.AgentModel != "" {
+		// Antigravity：field 12 为所选模型与 token 上限，field 23 为官网默认的远程环境
+		target = target[:1]
+		if config := request.AgentConfig; config != nil && (config.Model != "" || config.MaxTotalTokens > 0) {
+			antigravity := make([]any, 7)
+			if config.Model != "" {
+				antigravity[0] = strings.TrimPrefix(config.Model, "models/")
+			}
+			if config.MaxTotalTokens > 0 {
+				antigravity[6] = config.MaxTotalTokens
+			}
+			target = append(target, make([]any, 11)...)
+			target[11] = antigravity
+		}
+		interaction[22] = []any{nil, nil, int64(1)}
+	}
+	interaction[18] = target
+	interaction[26] = []any{steps}
+	body, _ := json.Marshal([]any{nil, int64(1), int64(1), interaction, nil, int64(1)})
 	return body, binding, nil
 }
 
 // EncodeGetInteractionStreamRequest 编码按 interaction ID 读取后台任务增量与终态的请求
 func EncodeGetInteractionStreamRequest(id string, model string) ([]byte, error) {
-	body, err := json.Marshal([]any{id, int64(1), nil, nil, nil, int64(1), wireModelName(model)})
-	if err != nil {
-		return nil, fmt.Errorf("编码 GetInteractionStream: %w", err)
-	}
-	return body, nil
+	return json.Marshal([]any{id, int64(1), nil, nil, nil, int64(1), wireModelName(model)})
 }
 
 // decodeCreateInteractionResponse 读取 CreateInteraction 返回的 interaction ID
@@ -644,7 +768,7 @@ func (c *Client) generateInteractionTask(ctx context.Context, request GenerateRe
 		reason = "该模型使用 CreateInteraction 后台任务，收集完成后返回"
 	}
 	reportUpstreamMode(ctx, "GetInteractionStream", "stream", reason)
-	body, binding, err := EncodeCreateInteractionRequest(request)
+	body, binding, err := EncodeCreateInteractionRequest(request, entry.model)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
@@ -709,7 +833,7 @@ func (c *Client) generateInteractionTask(ctx context.Context, request GenerateRe
 		cancel()
 		return nil, err
 	}
-	return c.interactionEvents(ctx, request, entry, "GetInteractionStream", response, cancel)
+	return c.interactionEvents(ctx, request, entry, "GetInteractionStream", response, &interactionTask{id: id, account: accountID, cancel: cancel})
 }
 
 // decodeInteractionCitations 解码 content field 10 的引用：每项为正文中引用标记的起止字符位置与来源网址
@@ -748,20 +872,23 @@ func decodeInteractionCitations(method string, value json.RawMessage, raw json.R
 	return nil
 }
 
-// decodeInteractionMedia 解码图片或视频 content：MIME 枚举与 Base64 数据
-func decodeInteractionMedia(method string, value json.RawMessage, index int, mimes map[int64]string, raw json.RawMessage) (*Media, error) {
+// decodeInteractionMedia 解码媒体 content：MIME 枚举与 Base64 数据，枚举缺省或不在表中时按官网取该类媒体的默认 MIME
+func decodeInteractionMedia(method string, value json.RawMessage, index int, raw json.RawMessage) (*Blob, error) {
 	path := fmt.Sprintf("$delta[1][%d]", index)
 	media, err := rawArray(value, path, raw)
 	if err != nil || len(media) < 2 {
 		return nil, &ProtocolEvidenceError{Method: method, Path: path, Detail: "媒体 delta 无效", Raw: cloneRaw(raw)}
 	}
-	code, err := rawInt64(media[0], path+"[0]", raw)
-	if err != nil {
-		return nil, withMethod(err, method)
+	var code int64
+	if !isJSONNull(media[0]) {
+		if code, err = rawInt64(media[0], path+"[0]", raw); err != nil {
+			return nil, withMethod(err, method)
+		}
 	}
-	mimeType, ok := mimes[code]
+	kind := interactionMediaMIME[index]
+	mimeType, ok := kind.codes[code]
 	if !ok {
-		return nil, &ProtocolEvidenceError{Method: method, Path: path + "[0]", Detail: fmt.Sprintf("未识别的媒体 MIME 枚举 %d", code), Raw: cloneRaw(raw)}
+		mimeType = kind.unlisted
 	}
 	encoded, err := rawString(media[1], path+"[1]", raw)
 	if err != nil {
@@ -771,5 +898,5 @@ func decodeInteractionMedia(method string, value json.RawMessage, index int, mim
 	if err != nil {
 		return nil, &ProtocolEvidenceError{Method: method, Path: path + "[1]", Detail: "媒体数据不是 Base64", Raw: cloneRaw(raw)}
 	}
-	return &Media{MIME: mimeType, Data: data}, nil
+	return &Blob{MIME: mimeType, Data: data}, nil
 }

@@ -241,8 +241,10 @@ func (host *HostServer) start(ctx context.Context, request hostRequest) (*browse
 	if err != nil {
 		return nil, "", err
 	}
+	// 서비스에서 직접 띄울 때와 같이 Camoufox 임시 폴더를 profile 로 지정한다
+	environment = append(environment, "TMP="+request.Profile, "TEMP="+request.Profile, "TMPDIR="+request.Profile)
 	command := exec.Command(executable, browserArguments(true, request.Profile)...)
 	command.Env = environment
 	configureBrowserProcess(command, true)
-	return startBrowserCommand(ctx, command, "", nil, host.Log, 0, func() {})
+	return startBrowserCommand(ctx, command, "", nil, "", host.Log, 0, func() {})
 }

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -51,6 +52,10 @@ type MakerSuiteHTTPTransport struct {
 	now         func() time.Time
 	clientsMu   sync.Mutex
 	clients     map[string]*http.Client
+	// driveMu 保护 driveDiscovered
+	driveMu sync.Mutex
+	// driveDiscovered 记录已按官网页面读取 Drive discovery 文档的账户
+	driveDiscovered map[string]bool
 }
 
 type accountLeaseContextKey struct{}
@@ -73,31 +78,25 @@ func ContextWithAccountSelectionObserver(ctx context.Context, observer func(*Acc
 }
 
 func observeAccountSelection(ctx context.Context, account *Account) {
-	observer, ok := ctx.Value(accountSelectionObserverContextKey{}).(func(*Account))
-	if ok && observer != nil {
+	if observer, ok := ctx.Value(accountSelectionObserverContextKey{}).(func(*Account)); ok {
 		observer(account)
 	}
 }
 
 // NewMakerSuiteHTTPTransport 创建普通 MakerSuite RPC 传输
 func NewMakerSuiteHTTPTransport(options HTTPTransportOptions) (*MakerSuiteHTTPTransport, error) {
-	if options.Pool == nil {
-		return nil, fmt.Errorf("AI Studio account pool 不能为空")
-	}
-	if options.Headers == nil {
-		return nil, fmt.Errorf("AI Studio protocol header provider 不能为空")
-	}
 	signer := options.Signer
 	if signer == nil {
 		signer = NewSigner()
 	}
 	transport := &MakerSuiteHTTPTransport{
-		pool:        options.Pool,
-		signer:      signer,
-		headers:     options.Headers,
-		globalProxy: strings.TrimSpace(options.GlobalProxy),
-		now:         time.Now,
-		clients:     make(map[string]*http.Client),
+		pool:            options.Pool,
+		signer:          signer,
+		headers:         options.Headers,
+		globalProxy:     strings.TrimSpace(options.GlobalProxy),
+		now:             time.Now,
+		clients:         make(map[string]*http.Client),
+		driveDiscovered: make(map[string]bool),
 	}
 	if _, err := transport.clientForProxy(transport.globalProxy); err != nil {
 		return nil, err
@@ -105,18 +104,25 @@ func NewMakerSuiteHTTPTransport(options HTTPTransportOptions) (*MakerSuiteHTTPTr
 	return transport, nil
 }
 
+// sendHTTP 发送 HTTP 请求，请求失败时错误中的地址不含查询参数
+func sendHTTP(client *http.Client, request *http.Request) (*http.Response, error) {
+	response, err := client.Do(request)
+	var requestErr *url.Error
+	if errors.As(err, &requestErr) {
+		requestErr.URL, _, _ = strings.Cut(requestErr.URL, "?")
+	}
+	return response, err
+}
+
 // DiscoverPublicHeaders 从 AI Studio 首页读取普通 RPC 所需的公开头
 func DiscoverPublicHeaders(ctx context.Context, client *http.Client) (http.Header, error) {
-	if client == nil {
-		return nil, fmt.Errorf("HTTP client 不能为空")
-	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, aiStudioOrigin+"/", nil)
 	if err != nil {
 		return nil, err
 	}
 	request.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	request.Header.Set("User-Agent", publicDiscoveryUserAgent)
-	response, err := client.Do(request)
+	response, err := sendHTTP(client, request)
 	if err != nil {
 		return nil, fmt.Errorf("读取 AI Studio 首页: %w", err)
 	}
@@ -129,7 +135,7 @@ func DiscoverPublicHeaders(ctx context.Context, client *http.Client) (http.Heade
 		return nil, fmt.Errorf("读取 AI Studio 首页正文: %w", err)
 	}
 	match := makerSuiteAPIKeyPattern.FindSubmatch(body)
-	if len(match) != 2 || len(match[1]) == 0 {
+	if match == nil {
 		return nil, fmt.Errorf("AI Studio 首页缺少 WIu0Nc")
 	}
 	visitID, err := newVisitID()
@@ -203,6 +209,9 @@ func (t *MakerSuiteHTTPTransport) UploadAssistantFile(ctx context.Context, accou
 		header.Set("Sec-Fetch-Dest", "empty")
 		header.Set("Sec-Fetch-Mode", "cors")
 		header.Set("Sec-Fetch-Site", "same-origin")
+		if account.Config.AuthUser > 0 {
+			header.Set("X-Goog-Authuser", strconv.Itoa(account.Config.AuthUser))
+		}
 		if language := account.AcceptLanguage(); language != "" {
 			header.Set("Accept-Language", language)
 		}
@@ -212,7 +221,7 @@ func (t *MakerSuiteHTTPTransport) UploadAssistantFile(ctx context.Context, accou
 			return nil, nil, fmt.Errorf("创建写代码助手附件上传请求: %w", err)
 		}
 		request.Header = header
-		response, err := client.Do(request)
+		response, err := sendHTTP(client, request)
 		if err != nil {
 			return nil, nil, fmt.Errorf("执行写代码助手附件上传: %w", err)
 		}
@@ -287,12 +296,11 @@ func (t *MakerSuiteHTTPTransport) Do(ctx context.Context, rpc RPCRequest) (*RPCR
 	if err != nil {
 		return nil, releaseOnError(err)
 	}
-	response, err := client.Do(request)
+	response, err := sendHTTP(client, request)
 	if err != nil {
 		return nil, releaseOnError(fmt.Errorf("执行 MakerSuite %s 请求: %w", rpc.Method, err))
 	}
-	setCookies := append([]string(nil), response.Header.Values("Set-Cookie")...)
-	if len(setCookies) > 0 {
+	if setCookies := response.Header.Values("Set-Cookie"); len(setCookies) > 0 {
 		if err := lease.MergeSetCookieHeaders(setCookies, rpc.URL, t.now()); err != nil {
 			_ = response.Body.Close()
 			return nil, releaseOnError(fmt.Errorf("合并 MakerSuite %s 响应 Cookie: %w", rpc.Method, err))
@@ -301,11 +309,10 @@ func (t *MakerSuiteHTTPTransport) Do(ctx context.Context, rpc RPCRequest) (*RPCR
 	body := &leaseResponseBody{
 		body: response.Body,
 		finish: func() error {
-			var finishErr error
 			if owned {
-				finishErr = errors.Join(finishErr, lease.Release())
+				return lease.Release()
 			}
-			return finishErr
+			return nil
 		},
 	}
 	return &RPCResponse{StatusCode: response.StatusCode, Header: response.Header.Clone(), Body: body}, nil
@@ -321,7 +328,6 @@ func (t *MakerSuiteHTTPTransport) CloseIdleConnections() {
 }
 
 func (t *MakerSuiteHTTPTransport) clientForProxy(proxyURL string) (*http.Client, error) {
-	proxyURL = strings.TrimSpace(proxyURL)
 	t.clientsMu.Lock()
 	defer t.clientsMu.Unlock()
 	if client := t.clients[proxyURL]; client != nil {
@@ -363,6 +369,9 @@ func prepareProtocolHeaders(
 			headers.Add(name, value)
 		}
 	}
+	if account.Config.AuthUser > 0 {
+		headers.Set("X-Goog-Authuser", strconv.Itoa(account.Config.AuthUser))
+	}
 	for _, name := range []string{"User-Agent", "X-Goog-Api-Key", "X-Goog-Authuser", "X-User-Agent"} {
 		if strings.TrimSpace(headers.Get(name)) == "" {
 			return StorageState{}, nil, fmt.Errorf("账户动态公共头缺少 %s", name)
@@ -374,6 +383,7 @@ func prepareProtocolHeaders(
 	}
 	headers.Set("Authorization", authorization)
 	headers.Set("Accept", "*/*")
+	headers.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 	headers.Set("Origin", aiStudioOrigin)
 	headers.Set("Referer", aiStudioOrigin+"/")
 	headers.Set("Sec-Fetch-Dest", "empty")
@@ -409,9 +419,6 @@ func resolveAccountLease(ctx context.Context, pool *AccountPool, selection Accou
 }
 
 func validateLeaseSelection(lease *AccountLease, selection AccountSelection) error {
-	if lease == nil || lease.pool == nil || lease.account == nil {
-		return fmt.Errorf("context 账户租约未初始化")
-	}
 	lease.pool.mu.Lock()
 	defer lease.pool.mu.Unlock()
 	account := lease.Account()

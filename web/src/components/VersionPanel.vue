@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onActivated, ref } from 'vue'
+import { computed, onActivated, onUnmounted, ref, useTemplateRef, watch } from 'vue'
 import { api } from '@/api'
 import { useI18n } from '@/i18n'
 import { markdown } from '@/markdown'
@@ -8,7 +8,7 @@ import UiIcon from '@/components/UiIcon.vue'
 
 const props = defineProps<{ status: UpdateStatus | null; activeRequests: number }>()
 const emit = defineEmits<{ status: [UpdateStatus]; restarting: [] }>()
-const { t, locale, errorText } = useI18n()
+const { t, locale, errorText, logText } = useI18n()
 const checking = ref(false)
 const confirming = ref(false)
 const phase = ref<'idle' | 'installing' | 'restarting'>('idle')
@@ -16,6 +16,25 @@ const error = ref('')
 
 const latest = computed(() => props.status?.latest ?? '')
 const notes = computed(() => markdown.render(props.status?.notes ?? ''))
+const notesBox = useTemplateRef<HTMLElement>('notesBox')
+// revealFrame 是放出下一段更新说明的动画帧，没有时为 0
+let revealFrame = 0
+
+// revealNotes 让更新说明的前两段随页面排版，其余段落每帧放出一段，首次排版中文时的字形读取与排版分散到多帧
+function revealNotes(): void {
+  cancelAnimationFrame(revealFrame)
+  const blocks = Array.from(notesBox.value?.children ?? []) as HTMLElement[]
+  for (const block of blocks.slice(2)) block.hidden = true
+  const next = () => {
+    const block = blocks.find((item) => item.hidden)
+    if (block === undefined) return
+    block.hidden = false
+    revealFrame = requestAnimationFrame(next)
+  }
+  revealFrame = requestAnimationFrame(next)
+}
+watch(notes, revealNotes, { flush: 'post', immediate: true })
+onUnmounted(() => cancelAnimationFrame(revealFrame))
 const publishedAt = computed(() =>
   props.status?.published_at
     ? new Date(props.status.published_at).toLocaleString(locale.value)
@@ -70,8 +89,12 @@ onActivated(() => void check(false))
 </script>
 
 <template>
-  <section class="flex min-h-0 flex-1 flex-col overflow-auto md:overflow-hidden">
-    <header class="flex flex-wrap items-center gap-3 border-b border-line px-4 py-4 md:px-8">
+  <section
+    class="flex min-h-0 flex-1 flex-col overflow-auto [scrollbar-gutter:stable] md:overflow-hidden"
+  >
+    <header
+      class="flex flex-wrap items-center gap-3 border-b border-line px-4 py-4 md:px-[max(2rem,calc((100%_-_var(--container-4xl))/2_+_2rem))]"
+    >
       <div class="min-w-0 flex-1">
         <h2 class="text-xl font-semibold text-white">{{ t('section.version.title') }}</h2>
         <p class="mt-1 text-sm text-gray-500">{{ t('section.version.description') }}</p>
@@ -171,16 +194,13 @@ onActivated(() => void check(false))
         <p v-else-if="status?.mode === 'managed'" class="mt-4 text-sm text-gray-400">
           {{ t('version.managed').replaceAll('{name}', status.managed_by ?? '') }}
         </p>
-        <p v-else-if="status?.mode === 'download'" class="mt-4 text-sm text-gray-400">
-          {{ t('version.download') }}
-        </p>
 
         <p
           v-if="error || status?.error"
           role="alert"
           class="mt-4 rounded border border-red-500/40 bg-red-500/10 p-3 text-sm break-words text-red-300"
         >
-          {{ error || status?.error }}
+          {{ error || logText(status?.error ?? '') }}
         </p>
       </article>
 
@@ -192,7 +212,8 @@ onActivated(() => void check(false))
           {{ t('version.notes').replace('{version}', latest) }}
         </h3>
         <div
-          class="markdown mt-3 min-h-0 flex-1 text-sm leading-6 [overflow-wrap:anywhere] text-gray-300 md:overflow-y-auto"
+          ref="notesBox"
+          class="markdown mt-3 min-h-0 flex-1 text-sm leading-6 [overflow-wrap:anywhere] text-gray-300 md:overflow-y-auto md:[scrollbar-gutter:stable]"
           v-html="notes"
         />
       </article>

@@ -1,17 +1,19 @@
 <script setup lang="ts">
-import { computed, reactive, ref, useTemplateRef, watch } from 'vue'
-import { use } from 'echarts/core'
-import { CanvasRenderer } from 'echarts/renderers'
-import { BarChart, LineChart } from 'echarts/charts'
 import {
-  AriaComponent,
-  GridComponent,
-  LegendComponent,
-  MarkLineComponent,
-  TooltipComponent,
-} from 'echarts/components'
-import VChart, { type Exposed } from 'vue-echarts'
+  computed,
+  defineAsyncComponent,
+  onMounted,
+  onUnmounted,
+  reactive,
+  ref,
+  shallowReactive,
+  useTemplateRef,
+  watch,
+} from 'vue'
+import type { Exposed } from 'vue-echarts'
+import type { EChartsCoreOption } from 'echarts/core'
 import { useI18n } from '@/i18n'
+import { afterTask } from '@/lazy'
 import { useTheme } from '@/theme'
 import type { UsageDimension, UsageReport } from '@/types'
 import UiSelect from '../UiSelect.vue'
@@ -20,23 +22,33 @@ import { useUsageFormat } from './format'
 import { readPreference, writePreference } from '@/preference'
 import { assignColors, dimensions, otherColor, successRate } from './model'
 
-use([
-  CanvasRenderer,
-  BarChart,
-  LineChart,
-  AriaComponent,
-  GridComponent,
-  LegendComponent,
-  MarkLineComponent,
-  TooltipComponent,
-])
-
 const props = defineProps<{ report: UsageReport; stack: UsageDimension }>()
 const emit = defineEmits<{ 'update:stack': [value: UsageDimension] }>()
+
+// chartModule 是随用量图表一同开始载入的 ECharts 块，载入与求值在之后的任务中完成
+const chartModule = import('./chart')
+// VChart 是 ECharts 图表组件，块求值后的下一个任务才挂载首张图表
+const VChart = defineAsyncComponent(() => chartModule.then(afterTask))
 
 const { t } = useI18n()
 const { theme: uiTheme } = useTheme()
 const { compact, integer, duration, percent, bucketLabel, dimensionLabel } = useUsageFormat()
+const root = useTemplateRef<HTMLElement>('root')
+// visible 标记已进入视口的图表绘图区
+const visible = reactive({ traffic: false, outcomes: false, latency: false, tokens: false })
+let observer: IntersectionObserver
+
+onMounted(() => {
+  observer = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue
+      visible[(entry.target as HTMLElement).dataset.chart as ChartKey] = true
+      observer.unobserve(entry.target)
+    }
+  })
+  root.value!.querySelectorAll('[data-chart]').forEach((figure) => observer.observe(figure))
+})
+onUnmounted(() => observer.disconnect())
 const metric = ref<'requests' | 'tokens'>(
   readPreference('usage.trafficMetric', 'requests', (value) =>
     ['requests', 'tokens'].includes(value as string),
@@ -62,7 +74,7 @@ const charts: Record<ChartKey, Readonly<{ value: Exposed | null }>> = {
 // Series 是图例需要的序列名与颜色
 interface Series {
   name: string
-  color?: string | undefined
+  color: string
 }
 
 // withLegend 用页面图例的开关状态生成 ECharts 图例选择，图表内不绘制图例
@@ -74,8 +86,8 @@ function withLegend<T extends { series: Series[] }>(key: ChartKey, option: T) {
 }
 
 // legendItems 返回页面图例的条目
-function legendItems(option: { series: Series[] }): { name: string; color: string }[] {
-  return option.series.map((item) => ({ name: item.name, color: item.color ?? otherColor }))
+function legendItems(option: { series: Series[] }): Series[] {
+  return option.series.map((item) => ({ name: item.name, color: item.color }))
 }
 
 // toggle 切换一个序列的显示
@@ -120,9 +132,13 @@ const labels = computed(() => {
 interface TooltipItem {
   axisValueLabel: string
   seriesName: string
+  seriesType: string
   value: number | null
   color: string
 }
+
+// barData 把柱状序列的零值写成 null，零高的柱不生成图形元素，提示框仍按 0 显示
+const barData = (values: number[]): (number | null)[] => values.map((value) => value || null)
 
 // tooltipRows 生成坐标轴提示框内容，可按数值降序并追加合计
 function tooltipRows(
@@ -130,7 +146,9 @@ function tooltipRows(
   format: (value: number, item: TooltipItem) => string,
   options: { sort?: boolean; total?: boolean } = {},
 ): string {
-  const rows = items.filter((item) => item.value !== null && item.value !== undefined)
+  const rows = items
+    .map((item) => (item.seriesType === 'bar' ? { ...item, value: item.value ?? 0 } : item))
+    .filter((item) => item.value !== null && item.value !== undefined)
   if (options.sort) rows.sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
   const escape = (value: string): string =>
     value.replace(/[&<>"]/g, (char) => `&#${char.charCodeAt(0)};`)
@@ -193,8 +211,8 @@ const trafficOption = computed(() => {
       stack: 'traffic',
       barMaxWidth: 22,
       emphasis: { focus: 'series' },
-      color: item.other ? otherColor : colors.get(item.key),
-      data: metric.value === 'tokens' ? item.tokens : item.requests,
+      color: item.other ? otherColor : colors.get(item.key)!,
+      data: barData(metric.value === 'tokens' ? item.tokens : item.requests),
     })),
   })
 })
@@ -209,7 +227,7 @@ const outcomesOption = computed(() => {
     stack: 'outcomes',
     barMaxWidth: 22,
     color,
-    data,
+    data: barData(data),
   })
   return withLegend('outcomes', {
     ...base(compact, rate),
@@ -402,10 +420,44 @@ const tokensOption = computed(() => {
     ],
   })
 })
+// shown 是各图表已交给 ECharts 的配置，进入视口或配置变化后每帧绘制之后只更新一张图，重绘不与页面更新及其布局挤在同一个长任务里
+const shown = shallowReactive<Partial<Record<ChartKey, EChartsCoreOption>>>({})
+const options: Record<ChartKey, Readonly<{ value: EChartsCoreOption }>> = {
+  traffic: trafficOption,
+  outcomes: outcomesOption,
+  latency: latencyOption,
+  tokens: tokensOption,
+}
+let frame = 0
+let staging = 0
+
+// scheduleStage 在下一帧绘制之后的任务中更新下一张图表
+function scheduleStage(): void {
+  cancelAnimationFrame(frame)
+  clearTimeout(staging)
+  frame = requestAnimationFrame(() => {
+    staging = window.setTimeout(stageCharts)
+  })
+}
+
+// stageCharts 把下一张可见且配置有变化的图表交给 ECharts，其余图表排到后续帧
+function stageCharts(): void {
+  const key = (Object.keys(options) as ChartKey[]).find(
+    (name) => visible[name] && shown[name] !== options[name].value,
+  )
+  if (key === undefined) return
+  shown[key] = options[key].value
+  scheduleStage()
+}
+watch([visible, trafficOption, outcomesOption, latencyOption, tokensOption], scheduleStage)
+onUnmounted(() => {
+  cancelAnimationFrame(frame)
+  clearTimeout(staging)
+})
 </script>
 
 <template>
-  <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
+  <div ref="root" class="grid grid-cols-1 gap-4 xl:grid-cols-2">
     <figure class="min-w-0 rounded-lg border border-line bg-panel p-4 xl:col-span-2">
       <div class="mb-2 flex flex-wrap items-center gap-2">
         <figcaption class="mr-auto">
@@ -447,7 +499,9 @@ const tokensOption = computed(() => {
         @toggle="toggle('traffic', $event)"
         @focus="focus('traffic', $event)"
       />
-      <div class="h-72"><VChart ref="traffic" :option="trafficOption" autoresize /></div>
+      <div data-chart="traffic" class="h-72">
+        <VChart v-if="shown.traffic" ref="traffic" :option="shown.traffic" autoresize />
+      </div>
     </figure>
     <figure class="flex min-w-0 flex-col rounded-lg border border-line bg-panel p-4">
       <figcaption class="mb-2 text-sm font-medium text-gray-200">
@@ -459,8 +513,8 @@ const tokensOption = computed(() => {
         @toggle="toggle('outcomes', $event)"
         @focus="focus('outcomes', $event)"
       />
-      <div class="min-h-60 flex-1">
-        <VChart ref="outcomes" :option="outcomesOption" autoresize />
+      <div data-chart="outcomes" class="min-h-60 flex-1">
+        <VChart v-if="shown.outcomes" ref="outcomes" :option="shown.outcomes" autoresize />
       </div>
     </figure>
     <figure class="flex min-w-0 flex-col rounded-lg border border-line bg-panel p-4">
@@ -508,8 +562,8 @@ const tokensOption = computed(() => {
         @toggle="toggle('latency', $event)"
         @focus="focus('latency', $event)"
       />
-      <div class="min-h-60 flex-1">
-        <VChart ref="latency" :option="latencyOption" autoresize />
+      <div data-chart="latency" class="min-h-60 flex-1">
+        <VChart v-if="shown.latency" ref="latency" :option="shown.latency" autoresize />
       </div>
     </figure>
     <figure class="min-w-0 rounded-lg border border-line bg-panel p-4 xl:col-span-2">
@@ -522,7 +576,9 @@ const tokensOption = computed(() => {
         @toggle="toggle('tokens', $event)"
         @focus="focus('tokens', $event)"
       />
-      <div class="h-56"><VChart ref="tokens" :option="tokensOption" autoresize /></div>
+      <div data-chart="tokens" class="h-56">
+        <VChart v-if="shown.tokens" ref="tokens" :option="shown.tokens" autoresize />
+      </div>
     </figure>
   </div>
 </template>

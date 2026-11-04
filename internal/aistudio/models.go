@@ -9,6 +9,17 @@ import (
 	"strings"
 )
 
+// modelStages 是 ListModels field 23 的模型阶段码对应的 Gemini API ModelStage 枚举名
+var modelStages = []string{"", "UNSTABLE_EXPERIMENTAL", "EXPERIMENTAL", "PREVIEW", "STABLE", "LEGACY", "DEPRECATED", "RETIRED"}
+
+// modelStageName 返回模型阶段码的枚举名，0 为未设置，未知码保留数值
+func modelStageName(code int64) string {
+	if code >= 0 && code < int64(len(modelStages)) {
+		return modelStages[code]
+	}
+	return strconv.FormatInt(code, 10)
+}
+
 var capabilityNames = map[int64]string{
 	1:  "chat_model",
 	9:  "code_execution",
@@ -30,7 +41,7 @@ var capabilityNames = map[int64]string{
 	53: "music_route",
 	54: "image_search",
 	58: "google_maps",
-	59: "interaction_route",
+	59: "thinking_summaries",
 	69: "agentic_video",
 	74: "transcription_word_timestamps",
 	76: "transcription_language_codes",
@@ -41,8 +52,6 @@ var capabilityNames = map[int64]string{
 	85: "speech_metadata",
 	91: "output_continuation",
 }
-
-var secondaryCapabilityNames = map[int64]string{}
 
 var aspectRatios = map[int64]string{
 	1: "1:1", 2: "9:16", 3: "16:9", 4: "3:4", 5: "4:3",
@@ -92,9 +101,11 @@ type modelEntry struct {
 type modelCatalog struct {
 	models  []Model
 	entries map[string]modelEntry
+	// source 是解析出该目录的 ListModels 响应 JSON
+	source json.RawMessage
 }
 
-// ParseModels 解码 ListModels 的现场数组协议
+// ParseModels 解码 ListModels 的数组协议
 func ParseModels(source io.Reader) ([]Model, error) {
 	catalog, err := parseModelCatalog(source)
 	if err != nil {
@@ -119,7 +130,7 @@ func parseModelCatalog(source io.Reader) (modelCatalog, error) {
 	if err != nil {
 		return modelCatalog{}, withMethod(err, "ListModels")
 	}
-	catalog := modelCatalog{models: make([]Model, 0, len(rows)), entries: make(map[string]modelEntry, len(rows))}
+	catalog := modelCatalog{models: make([]Model, 0, len(rows)), entries: make(map[string]modelEntry, len(rows)), source: raw}
 	for index, rowRaw := range rows {
 		entry, err := decodeModelRow(rowRaw, index)
 		if err != nil {
@@ -159,6 +170,10 @@ func decodeModelRow(raw json.RawMessage, rowIndex int) (modelEntry, error) {
 	if err != nil {
 		return modelEntry{}, err
 	}
+	version, err := optionalStringField(row, 2, path, raw)
+	if err != nil {
+		return modelEntry{}, err
+	}
 	description, err := optionalStringField(row, 4, path, raw)
 	if err != nil {
 		return modelEntry{}, err
@@ -192,10 +207,15 @@ func decodeModelRow(raw json.RawMessage, rowIndex int) (modelEntry, error) {
 		capabilities["capability_code_"+strconv.FormatInt(code, 10)] = true
 	}
 	for _, code := range secondaryCodes {
-		if name, known := secondaryCapabilityNames[code]; known {
-			capabilities[name] = true
-		}
 		capabilities["secondary_capability_code_"+strconv.FormatInt(code, 10)] = true
+	}
+	// field 82 是官网新建对话时默认开启的设置与工具的能力码
+	defaultCodes, err := intSliceField(row, 81, path, raw)
+	if err != nil {
+		return modelEntry{}, err
+	}
+	for _, code := range defaultCodes {
+		capabilities["default_capability_code_"+strconv.FormatInt(code, 10)] = true
 	}
 	if !isJSONNull(rawAt(row, 78)) {
 		// field 79 InteractionConfig 表示模型只经 Interactions API 生成
@@ -206,6 +226,10 @@ func decodeModelRow(raw json.RawMessage, rowIndex int) (modelEntry, error) {
 		return modelEntry{}, err
 	}
 	paidCode, err := optionalIntField(row, 77, path, raw)
+	if err != nil {
+		return modelEntry{}, err
+	}
+	stageCode, err := optionalIntField(row, 22, path, raw)
 	if err != nil {
 		return modelEntry{}, err
 	}
@@ -233,6 +257,8 @@ func decodeModelRow(raw json.RawMessage, rowIndex int) (modelEntry, error) {
 		ID:                id,
 		Name:              displayName,
 		Description:       description,
+		Version:           version,
+		Stage:             modelStageName(stageCode),
 		Methods:           append([]string(nil), methods...),
 		InputTokenLimit:   inputLimit,
 		OutputTokenLimit:  outputLimit,
@@ -242,6 +268,27 @@ func decodeModelRow(raw json.RawMessage, rowIndex int) (modelEntry, error) {
 		Languages:         languages,
 		AccessModes:       append([]int64(nil), accessModes...),
 		Paid:              paidCode == 2,
+	}
+	if config := rawAt(row, 78); !isJSONNull(config) {
+		// field 79 InteractionConfig 的 field 3 表示经 CreateInteraction 后台任务生成，field 6 是 agent 默认使用的模型
+		interaction, err := rawArray(config, path+"[78]", raw)
+		if err != nil {
+			return modelEntry{}, withMethod(err, "ListModels")
+		}
+		if value := rawAt(interaction, 2); !isJSONNull(value) {
+			background, err := rawBool(value, path+"[78][2]", raw)
+			if err != nil {
+				return modelEntry{}, withMethod(err, "ListModels")
+			}
+			model.Capabilities["interaction_task"] = background
+		}
+		if value := rawAt(interaction, 5); !isJSONNull(value) {
+			agentModel, err := rawString(value, path+"[78][5]", raw)
+			if err != nil {
+				return modelEntry{}, withMethod(err, "ListModels")
+			}
+			model.AgentModel = strings.TrimPrefix(agentModel, "models/")
+		}
 	}
 	defaults, err := decodeGenerationDefaults(row, path, raw, capabilities)
 	if err != nil {
@@ -540,33 +587,28 @@ func decodeGenerationDefaults(row []json.RawMessage, path string, evidence json.
 	return defaults, nil
 }
 
-func (c *Client) Models(ctx context.Context) ([]Model, error) {
-	return c.ModelsForAccount(ctx, "")
-}
-
-// ModelsForAccount 读取指定账户的实时模型目录
-func (c *Client) ModelsForAccount(ctx context.Context, accountID string) ([]Model, error) {
-	catalog, err := c.loadModels(ctx, accountID)
-	if err != nil {
-		return nil, err
-	}
-	return cloneModels(catalog.models), nil
-}
-
+// loadModels 以账户会话页面最近一次载入时的 ListModels 响应载入账户目录
 func (c *Client) loadModels(ctx context.Context, accountID string) (modelCatalog, error) {
-	response, err := c.do(ctx, "ListModels", accountID, "", []byte("[]"), false)
-	if err != nil {
+	if _, _, err := c.loadPageCatalog(ctx, accountID, false); err != nil {
 		return modelCatalog{}, err
 	}
-	defer response.Body.Close()
-	catalog, err := parseModelCatalog(response.Body)
-	if err != nil {
-		return modelCatalog{}, err
-	}
+	c.catalogMu.RLock()
+	defer c.catalogMu.RUnlock()
+	return c.catalogs[accountID], nil
+}
+
+// setModelCatalog 采用账户目录缓存恢复的 ListModels 目录
+func (c *Client) setModelCatalog(accountID string, catalog modelCatalog) {
 	c.catalogMu.Lock()
 	c.catalogs[accountID] = catalog
 	c.catalogMu.Unlock()
-	return catalog, nil
+}
+
+// modelCatalogSource 返回账户最近一次 ListModels 的响应 JSON
+func (c *Client) modelCatalogSource(accountID string) json.RawMessage {
+	c.catalogMu.RLock()
+	defer c.catalogMu.RUnlock()
+	return c.catalogs[accountID].source
 }
 
 func (c *Client) modelEntry(ctx context.Context, accountID string, modelID string) (modelEntry, error) {
@@ -608,11 +650,9 @@ func (catalog modelCatalog) lookup(modelID string) (modelEntry, bool) {
 		return entry, true
 	}
 	for _, model := range catalog.models {
-		if !modelMatchesID(model, modelID) {
-			continue
+		if modelMatchesID(model, modelID) {
+			return catalog.entries[model.ID], true
 		}
-		entry, exists := catalog.entries[model.ID]
-		return entry, exists
 	}
 	return modelEntry{}, false
 }
@@ -864,7 +904,7 @@ func decodeMappedCodes(raw json.RawMessage, path string, evidence json.RawMessag
 
 func appendOption(options map[string][]string, key string, values []string) {
 	if len(values) > 0 {
-		options[key] = append([]string(nil), values...)
+		options[key] = values
 	}
 }
 

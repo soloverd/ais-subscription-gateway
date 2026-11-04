@@ -12,6 +12,9 @@ import (
 
 const quotaResetTimezone = "America/Los_Angeles"
 
+// PlanLimitKind 是套餐限额冷却的类型名，也是其冷却原因的前缀
+const PlanLimitKind = "套餐限额"
+
 // planLimitBackoff 为没有恢复时间的套餐限额按连续次数递增的冷却时长
 var planLimitBackoff = []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, 30 * time.Minute, time.Hour}
 
@@ -75,9 +78,9 @@ func QuotaCooldownForError(err error, now time.Time) (QuotaCooldown, bool) {
 	if rpcError.RetryDelay > 0 {
 		until = now.Add(rpcError.RetryDelay)
 	} else if reset, ok := usageLimitReset(message); ok {
-		until, kind = now.Add(reset), "套餐限额"
+		until, kind = now.Add(reset), PlanLimitKind
 	} else if kind == "短期限额" && strings.Contains(message, "reached your usage limit") {
-		kind, escalate = "套餐限额", true
+		kind, escalate = PlanLimitKind, true
 	}
 	return QuotaCooldown{Until: until, Global: global, Kind: kind, Reason: kind + ": " + err.Error(), Escalate: escalate}, true
 }
@@ -89,6 +92,13 @@ func BuildRejectionCooldown(err error) (QuotaCooldown, bool) {
 		return QuotaCooldown{}, false
 	}
 	return QuotaCooldown{Kind: "Build 拒绝", Reason: "Build 拒绝: " + err.Error(), Escalate: true}, true
+}
+
+// BuildGenerationDisabled 判断错误是上游停用 Build 代理生成的 PROXY_GENERATION_DISABLED
+func BuildGenerationDisabled(err error) bool {
+	var rpcError *RPCError
+	return errors.As(err, &rpcError) && rpcError.StatusCode == http.StatusBadRequest && rpcError.Code == 3 &&
+		strings.Contains(rpcError.Message, "PROXY_GENERATION_DISABLED")
 }
 
 // zeroQuotaLimit 判断额度错误列出的每个额度项上限都为 0

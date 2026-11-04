@@ -14,7 +14,7 @@ import (
 func (service *trackedService) OpenBidi(ctx context.Context, request aistudio.BidiRequest) (*aistudio.BidiSession, error) {
 	request.Model = service.mappedModel(request.Model)
 	api.SetAccessLogTarget(ctx, request.Model, "")
-	request.Model = service.pool.CanonicalModelID(request.Model)
+	request.Model = service.catalogModelID(ctx, request.Model)
 	requestCtx, cancel, err := service.bidiRequestContext(ctx)
 	if err != nil {
 		api.SetAccessLogError(ctx, err)
@@ -35,14 +35,7 @@ func (service *trackedService) OpenBidi(ctx context.Context, request aistudio.Bi
 	}
 	request.ObserveModelAccessChange = service.publishModelAccess
 	request.ObserveAccountFailure = func(accountID string, cause error) {
-		label := accountID
-		for _, status := range service.pool.Status() {
-			if status.ID == accountID {
-				label = status.Label
-				break
-			}
-		}
-		service.requests.log(label, "WARN", fmt.Sprintf(
+		service.requests.log(service.accountLabel(accountID), "WARN", fmt.Sprintf(
 			"账号切换 | 模型=%s\n原因: %s",
 			strings.TrimPrefix(request.Model, "models/"), strings.TrimSpace(cause.Error()),
 		))
@@ -51,14 +44,13 @@ func (service *trackedService) OpenBidi(ctx context.Context, request aistudio.Bi
 		workerFailed := service.workers.WorkerFailed(accountID)
 		waaRuntimeFailed := aistudio.DefinitiveWAARuntimeFailure(cause)
 		workerReplaced := errors.Is(cause, errAccountWorkerReplaced)
-		recoverCurrentGeneration := needsWAARuntimeRecovery(cause, false, workerFailed, workerReplaced)
-		if recoveryCtx.Err() != nil || !recoverCurrentGeneration {
+		if recoveryCtx.Err() != nil || !needsWAARuntimeRecovery(cause, workerFailed, workerReplaced) {
 			return false, nil
 		}
 		expectedGeneration := workerGenerations[accountID]
 		recovered, _, recoveryErr := service.recoverWorkerOnce(
 			recoveryCtx, accountID, expectedGeneration, recoveredWorkers,
-			recoverCurrentGeneration, workerFailed || waaRuntimeFailed,
+			true, workerFailed || waaRuntimeFailed,
 		)
 		return recovered, recoveryErr
 	}
@@ -66,12 +58,7 @@ func (service *trackedService) OpenBidi(ctx context.Context, request aistudio.Bi
 		workerGenerations[account.ID] = service.workers.WorkerGeneration(account.ID)
 		api.SetAccessLogTarget(ctx, request.Model, account.Config.Label)
 	})
-	bidi, ok := service.service.(aistudio.BidiService)
-	if !ok {
-		cancel()
-		return nil, fmt.Errorf("bidi service 不可用")
-	}
-	session, err := bidi.OpenBidi(requestCtx, request)
+	session, err := service.service.(aistudio.BidiService).OpenBidi(requestCtx, request)
 	if err != nil {
 		api.SetAccessLogError(ctx, err)
 		cancel()
@@ -114,12 +101,12 @@ func (service *trackedService) bidiCandidates(ctx context.Context, model string,
 
 // preferBidiAccounts 在实测资格分组内按账户策略排列候选
 func (service *trackedService) preferBidiAccounts(accountIDs []string, modelID string, modelAccessScope string) []string {
-	scope := strings.TrimSpace(modelAccessScope)
+	scope := modelAccessScope
 	if scope == "" {
-		scope = strings.TrimPrefix(strings.TrimSpace(modelID), "models/")
+		scope = modelID
 	}
 	candidates := service.pool.OrderCandidates(accountIDs, scope)
-	if strings.TrimSpace(modelAccessScope) == "" {
+	if modelAccessScope == "" {
 		return candidates
 	}
 	states := service.pool.CandidateStatesForScope(candidates, modelID, modelAccessScope)

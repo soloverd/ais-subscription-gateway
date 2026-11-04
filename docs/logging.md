@@ -46,7 +46,7 @@ INFO  service  管理服务就绪 | 地址=http://127.0.0.1:2048
 INFO  service  管理页面已打开 | 地址=http://127.0.0.1:2048
 ```
 
-点击“启动服务”后状态进入 `LAUNCHING`。服务先读取当前 `generation`（一次启动所创建的生成服务实例）的 `CachedModels`，并为全部 `enabled`、`ready` 或 `busy` 账户并发执行 `ListModels`。缓存非空时立即预热 Worker；没有模型缓存的 generation 等待首个非空真实目录，其余账户继续后台同步。首个 Worker 就绪后状态进入 `RUNNING` 并开始接收请求，其余目标 Worker 继续预热。`LAUNCHING` 期间点击“停止服务”会取消当前阶段并回到 `STOPPED`。
+点击“启动服务”后状态进入 `LAUNCHING`。服务先读取当前 `generation`（一次启动所创建的生成服务实例）的 `CachedModels`。缓存非空时立即预热 Worker，首个 Worker 有结果后读取全部 `enabled`、`ready` 或 `busy` 账户会话页面载入时的权益与 `ListModels` 目录；没有模型缓存的 generation 先同时读取这些账户的页面目录，等待首个非空真实目录后预热 Worker，其余账户继续后台同步。首个 Worker 就绪后状态进入 `RUNNING` 并开始接收请求，其余目标 Worker 继续预热；可预热的账户全部处于冷却时记录 `WAA Worker 预热等待账户冷却 | 恢复=<时间>` 并直接进入 `RUNNING`，冷却期内的请求按冷却规则排队或返回 429，冷却结束后开始预热。`LAUNCHING` 期间点击“停止服务”会取消当前阶段并回到 `STOPPED`。
 
 ```text
 INFO  service              生成服务启动 | 1/2 | 准备模型目录 | 缓存=0
@@ -59,15 +59,18 @@ INFO  service              WAA Worker 预热完成 | Worker=5/5 | 耗时=34.903s
 
 `准备模型目录` 的 `缓存` 是启动瞬间当前 generation 合并后的真实模型数。`模型目录后台同步完成` 的 `同步` 是本次无错误返回的账户数，包含空目录；`非空` 是返回非空真实目录的账户数；`模型` 是合并后的公共模型数；`待重试账户` 是 `pending set`（等待重试的账户 ID 集合）的大小。每个非空结果到达时已经写入公共目录、发布管理事件并在运行期预热更多 Worker，因此后台完成日志可以出现在 `生成服务就绪` 之后。
 
-目录为空、单账户同步失败或单账户同步成功但仍为空的账户进入 pending ID 集合。初次 `fan-out`（同时向全部符合条件的账户发出 `ListModels`）结束后，处于 `RUNNING` 的生成服务使用单个 30 秒 ticker（定时器）对全部 pending ID 再次并发执行 `ListModels`；非空成功立即更新账户、模型和 Worker 选择，失败与空结果继续保留：
+目录为空、单账户同步失败或单账户同步成功但仍为空的账户进入 pending ID 集合。启动期同步结束后，处于 `RUNNING` 的生成服务使用单个 30 秒 ticker（定时器）重新载入全部 pending 账户的页面再次读取目录；非空成功立即更新账户、模型和 Worker 选择，失败与空结果继续保留：
 
 ```text
 INFO  account@example.com  模型目录已更新 | 模型=39
 ```
 
-同一循环每 10 分钟对全部 `enabled`、`ready` 或 `busy` 账户并发读取权益与 `ListModels` 目录，并发槽位已满的账户跳过本轮；订阅模型遇到额度错误时同样刷新该账户。权益或模型数变化时更新账户调度与公开目录，读取失败时记录原因，登录失效的账户转为需要登录：
+同一循环从启动期同步开始时起每 24 小时逐个重新载入全部 `enabled`、`ready` 或 `busy` 账户的页面读取权益与 `ListModels` 目录，并发槽位已满的账户跳过本轮：有常驻 Worker 的账户重新载入它的页面，其余账户临时载入一个页面，取得响应后关闭。请求的模型不在任何账户的目录中时，巡检正在读取一轮的第一个账户则请求等它读完，没有进行中的一轮且距上一轮开始已超过 10 分钟时立即读取一轮，请求等这一轮读完第一个账户后再查找模型，其余账户在后台继续读取。订阅模型遇到额度错误时同样刷新该账户。权益或模型数变化时更新账户调度与公开目录，读取失败时记录原因，登录失效的账户转为需要登录：
 
 ```text
+INFO  account@example.com  WAA Worker 页面已重新载入 | 耗时=4.521s
+INFO  account@example.com  WAA Worker 临时页面已关闭 | 页面模型=gemini-flash-latest | 耗时=6.112s
+WARN  account@example.com  WAA Worker 重新载入页面失败 | 耗时=2.082s | 错误=...
 INFO  account@example.com  账户状态已更新 | 权益=Free→Ultra | 模型=46→47
 WARN  account@example.com  账户状态刷新失败 | 错误=...
 ```
@@ -173,7 +176,7 @@ ERROR  account@example.com  WAA Worker 停止失败 | PID=18240 | 耗时=10.002s
 
 `request.state` 区分 `running`、`completed`、`tool_calls`、`limited`、`blocked`、`failed` 和 `cancelled`。策略终止保留 HTTP `200` 并显示原始 `finish_reason`；达到输出上限时显示 `max_tokens`。未知终止原因保留为 `provider_<code>`。
 
-控制台每行是一条独立 JSON 事件，请求数据与中文摘要分离：
+控制台每行是一条独立 JSON 事件，请求数据与摘要分离；控制台中的摘要与错误按操作系统语言输出，日志文件中为简体中文：
 
 ```json
 {"time":"2026-09-06T14:11:47Z","level":"INFO","msg":"工具调用完成","event":"request.finished","source":"account@example.com","request":{"id":"chatcmpl_example","state":"tool_calls","model":"gemini-3.8-flash","status":200,"duration_ms":4758,"tool_calls":1,"finish_reason":"stop","usage":{"input_tokens":100,"cached_tokens":0,"reasoning_tokens":32,"reply_tokens":38,"output_tokens":70,"total_tokens":170,"average_tokens_per_second":14.712064}}}
@@ -198,6 +201,9 @@ ERROR  account@example.com  WAA Worker 停止失败 | PID=18240 | 耗时=10.002s
 | `事件流停顿` | 已有语义事件，连续 15 秒没有下一事件 | `最近事件`、`推理`、`正文`、`网络字节`、`最近网络` |
 | `事件流恢复` | 停顿后解出下一语义事件 | `停顿`、`当前事件` |
 | `账号切换` | 当前账户在首个上游语义事件前失败，或非流式请求的上游流中途中断 | 当前账户来源、模型和下一行原始原因 |
+| `备用请求发起` | 原请求等待首个语义事件达到 `FIRST_EVENT_HEDGE` 的阈值，空闲账户开始同一请求 | `账户`、`原请求已等待`、`阈值`、`模型` |
+| `备用请求胜出` | 备用请求先解出首个语义事件，原请求取消 | `账户`、`原请求已等待`、`模型` |
+| `原请求胜出` | 原请求先解出首个语义事件，备用请求取消 | `备用账户`、`模型` |
 
 `网络字节` 是当前账户尝试累计读取的上游响应体字节数，`最近网络` 是最近一次读取距日志时刻的时间。`网络字节=0` 表示响应体尚未产生数据；数值增长且 `最近网络` 较短，表示网络仍有数据进入、解码器尚未形成新的语义事件。
 
@@ -227,7 +233,7 @@ SSE 客户端把该帧作为连接存活信号，正文、推理和 usage 继续
 
 ## 账户事件
 
-HTTP `401` 会使用账户保存的 OAuth/DBSC 材料续签 Cookie；账户没有材料或材料被拒绝时，从本机 Chrome 导入同一邮箱的材料。随后重置 WAA Worker 并重放一次请求。
+HTTP `401` 会使用账户保存的 OAuth/DBSC 材料续签 Cookie；账户没有材料或材料被拒绝时，从本机 Chrome 导入同一邮箱的材料。随后重置 WAA Worker 并重放一次请求。同一账户在续签完成前发出的请求同时收到 `401` 时只续签一次，其余请求等这次续签完成后直接重放。
 
 ```text
 INFO  account@example.com  账户认证续签 | 1/2 | 刷新 Cookie
@@ -279,7 +285,7 @@ ERROR service  请求账本写入失败 | 记录=<COUNT> | 错误=<ERROR>
 ERROR service  请求账本清理失败 | 错误=<ERROR>
 ```
 
-`REQUEST_BODY_LOG=true` 时，账本同时保存通过 API key 校验的 POST 请求与响应的原始正文，各截断到 64 KiB 并记录原始字节数，只保留最近 1000 条；流式响应保存 SSE 原文。正文包含提示词与模型输出，以明文保存在本机。请求日志展开后或用量页的请求详情中按请求 ID 查看正文。
+`REQUEST_BODY_LOG=true` 时，账本同时保存通过 API key 校验的 POST 请求与响应的原始正文，各截断到 64 KiB 并记录原始字节数，只保留最近 1000 条；流式响应保存 SSE 原文。正文包含提示词与模型输出，以 gzip 压缩、不加密的形式保存在本机。请求日志展开后或用量页的请求详情中按请求 ID 查看正文。
 
 ## 管理事件流
 

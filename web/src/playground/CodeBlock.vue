@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import hljs from 'highlight.js/lib/common'
+import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import DisclosureChevron from '@/components/DisclosureChevron.vue'
+import UiCollapse from '@/components/UiCollapse.vue'
 import { useConsole } from '@/console'
 import { useI18n } from '@/i18n'
 import type { IconName } from '@/playground/ui/icons'
 import UiIcon from '@/playground/ui/UiIcon.vue'
-import { vTooltip } from '@/playground/ui/tooltip'
 import { previewOrigin } from '@/playground/preview'
+import { copyToClipboard } from './clipboard'
+import { highlightCode } from './highlight'
 
 const props = withDefaults(
   defineProps<{
@@ -14,23 +16,17 @@ const props = withDefaults(
     language?: string
     headerText?: string
     icon?: IconName
-    expandable?: boolean
-    showDownload?: boolean
-    stickyHeader?: boolean
     showDivider?: boolean
   }>(),
   {
     language: '',
     headerText: '',
     icon: 'code',
-    expandable: true,
-    showDownload: true,
-    stickyHeader: true,
     showDivider: false,
   },
 )
 const { t } = useI18n()
-const { showNotice, config } = useConsole()
+const { config } = useConsole()
 
 // languageNames 是官网代码块标题中与语言标识不同写法的显示名
 const languageNames: Record<string, string> = {
@@ -92,13 +88,36 @@ const title = computed(() => {
       : language.charAt(0).toUpperCase() + language.slice(1)
   return props.headerText || name || t('pg.code')
 })
-// highlighted 是高亮后的代码；语言为 none 时按纯文本，未声明或不认识的语言自动识别
-const highlighted = computed(() => {
-  if (props.language === 'none') return escapeHTML(trimmed.value)
-  return hljs.getLanguage(props.language)
-    ? hljs.highlight(trimmed.value, { language: props.language, ignoreIllegals: true }).value
-    : hljs.highlightAuto(trimmed.value).value
+
+// largeCodeThreshold 是跳过展开收起过渡的字符阈值
+const largeCodeThreshold = 4_096
+
+const isLargeCode = computed(() => props.code.length >= largeCodeThreshold)
+const highlighted = shallowRef({ code: '', language: '', html: '' })
+let highlighting = false
+let disposed = false
+
+// renderHighlight 每块只处理一个高亮请求，完成后接上最新代码
+async function renderHighlight(): Promise<void> {
+  if (highlighting || disposed || !expanded.value || props.language === 'none') return
+  const code = trimmed.value
+  const language = props.language
+  highlighting = true
+  const html = await highlightCode(code, language)
+  highlighted.value = { code, language, html }
+  highlighting = false
+  if (code !== trimmed.value || language !== props.language) void renderHighlight()
+}
+watch([trimmed, () => props.language, expanded], () => void renderHighlight(), {
+  immediate: true,
 })
+
+// highlightedPrefix 是仍匹配当前代码的已高亮部分，后续文字即时显示
+const highlightedPrefix = computed(() =>
+  highlighted.value.language === props.language && trimmed.value.startsWith(highlighted.value.code)
+    ? highlighted.value
+    : { code: '', html: '' },
+)
 // previewable 与官网一致：15 行以上的 HTML 或以 <svg 开头的代码可以预览
 const previewable = computed(
   () =>
@@ -114,26 +133,14 @@ function sendPreview(event: MessageEvent): void {
 }
 
 onMounted(() => window.addEventListener('message', sendPreview))
-onUnmounted(() => window.removeEventListener('message', sendPreview))
-
-// escapeHTML 转义文本中的 HTML 特殊字符
-function escapeHTML(text: string): string {
-  return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
-}
+onUnmounted(() => {
+  disposed = true
+  window.removeEventListener('message', sendPreview)
+})
 
 // toggle 展开或折叠代码
 function toggle(): void {
-  if (props.expandable) expanded.value = !expanded.value
-}
-
-// copy 复制代码并以提示条告知结果
-async function copy(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(trimmed.value)
-    showNotice(t('pg.copied'), 'success')
-  } catch {
-    showNotice(t('pg.copyFailed'), 'error')
-  }
+  expanded.value = !expanded.value
 }
 
 // download 以官网文件名 ai_studio_code 加语言扩展名下载代码
@@ -151,14 +158,12 @@ function download(): void {
 <template>
   <div class="ms-code-block" :data-test-language="language">
     <div class="container">
-      <div class="panel" :class="{ 'sticky-header': stickyHeader, expanded }">
+      <div class="panel">
         <div
           class="code-header"
-          :class="{ sticky: stickyHeader, disabled: !expandable }"
           role="button"
-          :tabindex="expandable ? 0 : -1"
+          tabindex="0"
           :aria-expanded="expanded"
-          :aria-disabled="!expandable"
           @click="toggle"
           @keydown.enter.self.prevent="toggle"
           @keydown.space.self.prevent="toggle"
@@ -186,7 +191,6 @@ function download(): void {
                 <UiIcon :name="previewing ? 'stopGeneration' : 'playCircle'" :size="20" />
               </button>
               <button
-                v-if="showDownload"
                 v-tooltip="t('pg.download')"
                 type="button"
                 ms-button
@@ -202,13 +206,12 @@ function download(): void {
                 ms-button
                 class="ms-button-borderless ms-button-icon"
                 :aria-label="t('pg.copyCode')"
-                @click="copy"
+                @click="copyToClipboard(trimmed)"
               >
                 <UiIcon name="copy" :size="20" />
               </button>
             </div>
             <button
-              v-if="expandable"
               v-tooltip="expanded ? t('pg.collapseCode') : t('pg.expandCode')"
               type="button"
               ms-button
@@ -216,11 +219,13 @@ function download(): void {
               class="ms-button-borderless ms-button-icon"
               :aria-label="expanded ? t('pg.collapseCode') : t('pg.expandCode')"
             >
-              <UiIcon :name="expanded ? 'expandLess' : 'chevronDown'" :size="20" />
+              <DisclosureChevron :open="expanded" :turn="180"
+                ><UiIcon name="chevronDown" :size="20"
+              /></DisclosureChevron>
             </button>
           </div>
         </div>
-        <div class="code-body" :inert="!expanded">
+        <UiCollapse :open="expanded" :instant="isLargeCode">
           <div class="code-body-inner">
             <div v-if="previewing" class="preview">
               <iframe
@@ -232,12 +237,12 @@ function download(): void {
               ></iframe>
             </div>
             <template v-else>
-              <pre><code class="hljs" v-html="highlighted"></code></pre>
+              <pre><code class="hljs"><span v-html="highlightedPrefix.html"></span><span>{{ trimmed.slice(highlightedPrefix.code.length) }}</span></code></pre>
               <div v-if="showDivider" class="code-content-divider"></div>
               <slot></slot>
             </template>
           </div>
-        </div>
+        </UiCollapse>
       </div>
     </div>
   </div>
@@ -259,16 +264,15 @@ function download(): void {
 }
 
 .panel {
-  overflow: hidden;
+  overflow: visible clip;
   border-radius: 12px;
   background: var(--color-v3-surface-container);
 }
 
-.panel.sticky-header {
-  overflow: visible clip;
-}
-
 .code-header {
+  position: sticky;
+  z-index: 1;
+  top: calc(var(--ms-autoscroll-container-padding-top, 20px) * -1);
   display: flex;
   align-items: center;
   height: 36px;
@@ -283,18 +287,8 @@ function download(): void {
   outline: none;
 }
 
-.code-header.disabled {
-  cursor: default;
-}
-
 .code-header:focus-visible {
   background-color: var(--color-v3-surface-container-high);
-}
-
-.code-header.sticky {
-  position: sticky;
-  z-index: 1;
-  top: calc(var(--ms-autoscroll-container-padding-top, 20px) * -1);
 }
 
 .header-content {
@@ -329,22 +323,7 @@ function download(): void {
   justify-content: end;
 }
 
-.code-body {
-  display: grid;
-  grid-template-rows: 0fr;
-  visibility: hidden;
-  transition:
-    grid-template-rows 225ms cubic-bezier(0.4, 0, 0.2, 1),
-    visibility 225ms;
-}
-
-.panel.expanded .code-body {
-  grid-template-rows: 1fr;
-  visibility: visible;
-}
-
 .code-body-inner {
-  min-height: 0;
   overflow: hidden;
 }
 
@@ -354,6 +333,7 @@ pre {
   margin: 0;
   padding: 0 16px 12px 12px;
   overflow-x: auto;
+  contain: content;
   color: var(--color-v3-text);
   line-height: 22px;
 }

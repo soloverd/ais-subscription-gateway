@@ -141,7 +141,7 @@ func TestStartupAbortNeedsUserSession(t *testing.T) {
 	}
 	var cleaned atomic.Int32
 	_, _, err := startBrowserCommand(
-		context.Background(), exec.Command("/bin/sh", "-c", "kill -ABRT $$"), "", nil, nil, 5*time.Second, func() { cleaned.Add(1) },
+		context.Background(), exec.Command("/bin/sh", "-c", "kill -ABRT $$"), "", nil, "", nil, 5*time.Second, func() { cleaned.Add(1) },
 	)
 	var required *SessionRequiredError
 	if !errors.As(err, &required) || cleaned.Load() != 1 {

@@ -354,8 +354,6 @@ func (store *Store) scan(ctx context.Context, part segment, filters api.UsageFil
 		if value.firstEventMS > 0 {
 			firstEvent[0] = bucketCount{bucket: histogramBucket(value.firstEventMS), count: 1}
 			value.firstEvent, value.firstEvents = firstEvent[:], 1
-		} else {
-			value.firstEventMS = 0
 		}
 		visit(value)
 	}
@@ -401,13 +399,9 @@ var usageDimensions = append(slices.Clone(api.UsageDimensions), "status")
 
 // Usage 返回时间范围内的汇总、上一周期、估算费用、逐桶趋势、堆叠序列、分项与筛选候选
 func (store *Store) Usage(ctx context.Context, query api.UsageQuery) (api.UsageReport, error) {
-	location := query.Location
-	if location == nil {
-		location = time.UTC
-	}
 	now := time.Now()
 	from, to := query.From.UnixMilli(), query.To.UnixMilli()
-	starts := bucketStarts(query.From, query.To, query.Bucket, location)
+	starts := bucketStarts(query.From, query.To, query.Bucket, query.Location)
 	totals := &aggregate{}
 	buckets := make([]*aggregate, len(starts))
 	for index := range buckets {
@@ -432,11 +426,13 @@ func (store *Store) Usage(ctx context.Context, query api.UsageQuery) (api.UsageR
 		for _, dimension := range usageDimensions {
 			add(groups[dimension], value.dimension(dimension), value)
 		}
-		pair := [2]string{value.account, value.model}
-		if pairs[pair] == nil {
-			pairs[pair] = &aggregate{}
+		if !query.SkipPairs {
+			pair := [2]string{value.account, value.model}
+			if pairs[pair] == nil {
+				pairs[pair] = &aggregate{}
+			}
+			pairs[pair].add(value)
 		}
-		pairs[pair].add(value)
 		key := value.dimension(query.Stack)
 		if stack[key] == nil {
 			stack[key] = make([][2]int64, len(starts))

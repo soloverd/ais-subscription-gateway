@@ -28,10 +28,7 @@ func checkProxy(ctx context.Context, proxy string) error {
 	defer client.CloseIdleConnections()
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, proxyProbeTarget, nil)
-	if err != nil {
-		return err
-	}
+	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, proxyProbeTarget, nil)
 	response, err := client.Do(request)
 	if err != nil {
 		return err
@@ -41,7 +38,7 @@ func checkProxy(ctx context.Context, proxy string) error {
 
 // proxyNetworkError 判断请求失败是否为经代理的网络错误
 func proxyNetworkError(ctx context.Context, err error) bool {
-	if err == nil || ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return false
 	}
 	var transportError *url.Error
@@ -97,17 +94,11 @@ func (admin *runtimeAdmin) rebindAccount(ctx context.Context, accountID string) 
 		return err
 	}
 	account := lease.Account()
-	headerUpdate, err := admin.headers.prepareUpdate(account, account.Config)
-	if err != nil {
-		return errors.Join(err, lease.Release())
-	}
 	workerUpdate, err := admin.workers.prepareUpdate(account, account.Config)
 	if err != nil {
-		headerUpdate.Discard()
 		return errors.Join(err, lease.Release())
 	}
 	workerUpdate.Commit()
-	headerUpdate.Commit()
 	admin.requests.log(account.Config.Label, "WARN", fmt.Sprintf("代理改绑 | 出口=%s", redactedProxy(account.EffectiveProxy(admin.globalProxy))))
 	return lease.Release()
 }

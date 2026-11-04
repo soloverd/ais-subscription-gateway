@@ -1,8 +1,9 @@
 import { computed, reactive, ref, shallowRef } from 'vue'
-import { api, openAdminEvents, type EventConnection } from '@/api'
+import { api, openAdminEvents } from '@/api'
 import { useI18n } from '@/i18n'
 import type {
   Account,
+  AccountTask,
   AdminEvent,
   AdminLog,
   Cooldown,
@@ -19,6 +20,8 @@ const { t, errorText } = useI18n()
 const status = ref<ServiceStatus | null>(null)
 const logs = shallowRef<AdminLog[]>([])
 const accounts = ref<Account[]>([])
+// accountTasks 是服务端运行中与已结束、尚未关闭的添加或重新登录账户任务
+const accountTasks = ref<AccountTask[]>([])
 const models = ref<Model[]>([])
 const cooldowns = ref<Cooldown[]>([])
 const requests = ref<RequestSummary[]>([])
@@ -29,6 +32,7 @@ const stopPending = ref(false)
 const launchCancellationRequested = ref(false)
 const notice = reactive({ message: '', tone: 'success' as 'success' | 'error' })
 const loading = reactive({
+  status: true,
   accounts: true,
   models: true,
   requests: true,
@@ -55,21 +59,25 @@ const serviceState = computed<'unavailable' | 'running' | 'launching' | 'stopped
   return 'stopped'
 })
 
-let eventConnection: EventConnection | undefined
+let eventConnection: EventSource | undefined
 // consoleGeneration 为 startConsole 与 stopConsole 的调用序号，离开后才完成的初始化据此不再订阅事件
 let consoleGeneration = 0
 let noticeTimer: number | undefined
 let pendingLogs: AdminLog[] = []
 let logFlushTimer: number | undefined
 
-// showNotice 显示一次短暂操作结果
+// showNotice 显示一次操作结果，成功提示 3.2 秒后关闭，错误提示保留到手动关闭或下一条提示
 function showNotice(message: string, tone: 'success' | 'error'): void {
   notice.message = message
   notice.tone = tone
-  if (noticeTimer !== undefined) window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => {
-    notice.message = ''
-  }, 3200)
+  window.clearTimeout(noticeTimer)
+  if (tone === 'success') noticeTimer = window.setTimeout(closeNotice, 3200)
+}
+
+// closeNotice 关闭当前提示
+function closeNotice(): void {
+  window.clearTimeout(noticeTimer)
+  notice.message = ''
 }
 
 async function loadStatus(): Promise<void> {
@@ -77,6 +85,8 @@ async function loadStatus(): Promise<void> {
     status.value = await api.status()
   } catch {
     status.value = null
+  } finally {
+    loading.status = false
   }
 }
 
@@ -221,17 +231,14 @@ async function stopService(): Promise<void> {
 
 function flushLogs(): void {
   logFlushTimer = undefined
-  if (pendingLogs.length === 0) return
   logs.value = logs.value.concat(pendingLogs).slice(-2000)
   pendingLogs = []
 }
 
 function resetLogs(): void {
   pendingLogs = []
-  if (logFlushTimer !== undefined) {
-    window.clearTimeout(logFlushTimer)
-    logFlushTimer = undefined
-  }
+  window.clearTimeout(logFlushTimer)
+  logFlushTimer = undefined
   logs.value = []
 }
 
@@ -248,6 +255,12 @@ function replaceByID<T extends { id: string }>(items: T[], incoming: T): void {
   const index = items.findIndex((item) => item.id === incoming.id)
   if (index === -1) items.unshift(incoming)
   else items[index] = incoming
+}
+
+// updateAccount 用接口返回的账户替换列表中的同一账户
+function updateAccount(account: Account): void {
+  const index = accounts.value.findIndex((item) => item.id === account.id)
+  if (index !== -1) accounts.value[index] = account
 }
 
 // waitForRestart 在线更新后等新进程接管再刷新页面：状态接口返回其他版本或要求重新登录都表示旧进程已退出
@@ -288,6 +301,10 @@ function handleAdminEvent(event: AdminEvent): void {
     cooldowns.value = event.data
     return
   }
+  if (event.type === 'account_tasks') {
+    accountTasks.value = event.data.tasks
+    return
+  }
   replaceByID(requests.value, event.data)
 }
 
@@ -319,8 +336,9 @@ function stopConsole(): void {
   consoleGeneration++
   eventConnection?.close()
   eventConnection = undefined
-  if (logFlushTimer !== undefined) window.clearTimeout(logFlushTimer)
-  if (noticeTimer !== undefined) window.clearTimeout(noticeTimer)
+  window.clearTimeout(logFlushTimer)
+  window.clearTimeout(noticeTimer)
+  notice.message = ''
   window.removeEventListener('pagehide', flushDelete)
   flushDelete()
 }
@@ -331,6 +349,7 @@ export function useConsole() {
     status,
     logs,
     accounts,
+    accountTasks,
     visibleAccounts,
     models,
     cooldowns,
@@ -345,8 +364,10 @@ export function useConsole() {
     startPending,
     stopPending,
     showNotice,
+    closeNotice,
     loadAccountData,
     loadRequestData,
+    updateAccount,
     deleteAccount,
     undoDelete,
     commitDelete,

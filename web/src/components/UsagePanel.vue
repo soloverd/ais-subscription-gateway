@@ -1,17 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { computed, onActivated, onDeactivated, provide, ref, shallowRef, watch } from 'vue'
 import { api } from '@/api'
 import { useI18n } from '@/i18n'
 import type { Model, UsageDimension, UsageReport, UsageStats } from '@/types'
 import UiIcon from './UiIcon.vue'
 import UiSelect from './UiSelect.vue'
-import FilterMenu from './usage/FilterMenu.vue'
+import FilterMenu from './FilterMenu.vue'
 import KpiCard from './usage/KpiCard.vue'
 import RangePicker from './usage/RangePicker.vue'
 import RankingTable from './usage/RankingTable.vue'
 import RecordsTable from './usage/RecordsTable.vue'
 import UsageCharts from './usage/UsageCharts.vue'
-import { useUsageFormat } from './usage/format'
+import { usageClock, useUsageFormat } from './usage/format'
 import { readPreference, writePreference } from '@/preference'
 import {
   dimensions,
@@ -43,6 +43,7 @@ const loading = ref(false)
 const error = ref('')
 const updatedAt = ref(0)
 const now = ref(Date.now())
+provide(usageClock, now)
 const recordsRefresh = ref(0)
 const refreshChoices = [0, 15, 30, 60] as const
 const autoRefresh = ref<number>(
@@ -82,6 +83,7 @@ async function load(): Promise<void> {
   }
   query.set('tz', timezone)
   query.set('stack', state.stack)
+  query.set('pairs', '0')
   controller?.abort()
   const current = new AbortController()
   controller = current
@@ -99,6 +101,19 @@ async function load(): Promise<void> {
   } finally {
     if (controller === current) loading.value = false
   }
+}
+
+// loadPairs 读取当前范围与筛选下一个账户或模型的组合明细，主报告不含组合明细
+async function loadPairs(
+  dimension: 'account' | 'model',
+  key: string,
+): Promise<UsageReport['pairs']> {
+  const query = baseQuery()
+  if (query === null) throw new Error(t('usage.rangeInvalid'))
+  query.set(dimension, key)
+  query.set('tz', timezone)
+  query.set('stack', state.stack)
+  return (await api.usage(query, new AbortController().signal)).pairs
 }
 
 // refresh 立即刷新报告与请求记录
@@ -131,12 +146,13 @@ function resume(): void {
   if (document.visibilityState === 'visible') tick()
 }
 
-onMounted(() => {
-  void load()
+onActivated(() => {
+  if (report.value === null) void load()
+  else tick()
   clockTimer = window.setInterval(tick, 1000)
   document.addEventListener('visibilitychange', resume)
 })
-onUnmounted(() => {
+onDeactivated(() => {
   controller?.abort()
   window.clearInterval(clockTimer)
   document.removeEventListener('visibilitychange', resume)
@@ -172,18 +188,18 @@ const activeChips = computed(() =>
   ),
 )
 
-const freshness = computed(() => {
+// refreshTip 是刷新按钮的提示：数据更新时间与账本中最新请求距今多久
+const refreshTip = computed(() => {
   const latest = report.value?.latest_at
-  if (latest === undefined) return { tone: 'bg-gray-600', text: t('usage.latestNone') }
-  const age = now.value - new Date(latest).getTime()
-  const tone = age < 5 * 60_000 ? 'bg-green-500' : age < 3_600_000 ? 'bg-yellow-500' : 'bg-gray-500'
-  return { tone, text: t('usage.latest').replace('{time}', ago(latest, now.value)) }
-})
-const countdown = computed(() => {
-  if (!live.value) return t('usage.fixedRange')
-  if (autoRefresh.value === 0 || updatedAt.value === 0) return ''
-  const seconds = Math.max(0, autoRefresh.value - Math.floor((now.value - updatedAt.value) / 1000))
-  return t('usage.nextRefresh').replace('{seconds}', String(seconds))
+  return [
+    t('app.refresh'),
+    updatedAt.value > 0 && t('usage.updatedAt').replace('{time}', clock(new Date(updatedAt.value))),
+    latest === undefined
+      ? t('usage.latestNone')
+      : t('usage.latest').replace('{time}', ago(latest, now.value)),
+  ]
+    .filter(Boolean)
+    .join(' · ')
 })
 
 // relative 返回相对变化比例，上一周期为 0 时返回 null
@@ -361,41 +377,34 @@ const statusOptions = computed(() =>
 </script>
 
 <template>
-  <section class="flex min-h-0 flex-1 flex-col overflow-auto">
+  <section class="flex min-h-0 flex-1 flex-col overflow-auto [scrollbar-gutter:stable]">
     <header class="flex flex-wrap items-center gap-3 border-b border-line px-4 py-4 md:px-8">
       <div class="min-w-0 flex-1">
         <h2 class="text-xl font-semibold text-white">{{ t('usage.title') }}</h2>
         <p class="mt-1 text-sm text-gray-500">{{ t('usage.description') }}</p>
       </div>
-      <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-gray-500">
-        <span v-tooltip="t('usage.latestHelp')" class="flex items-center gap-1.5">
-          <span class="h-2 w-2 rounded-full" :class="freshness.tone" aria-hidden="true"></span>
-          {{ freshness.text }}
-        </span>
-        <span v-if="updatedAt > 0" class="tabular-nums" aria-live="polite">
-          {{ t('usage.updatedAt').replace('{time}', clock(new Date(updatedAt))) }}
-          <span v-if="countdown" class="ml-1 text-gray-600">· {{ countdown }}</span>
-        </span>
+      <div class="flex h-8 items-stretch rounded-md border border-line text-xs">
+        <button
+          v-tooltip="refreshTip"
+          type="button"
+          class="flex w-8 items-center justify-center text-gray-400 transition hover:bg-raised hover:text-white"
+          :class="live ? 'rounded-l-md' : 'rounded-md'"
+          :aria-label="t('app.refresh')"
+          @click="refresh"
+        >
+          <UiIcon name="refresh" :size="14" :class="{ 'animate-spin': loading }" />
+        </button>
         <UiSelect
           v-if="live"
           :model-value="autoRefresh"
           :aria-label="t('usage.autoRefresh')"
-          class="w-max rounded-md border border-line bg-canvas px-2 py-1 text-xs text-gray-200"
+          class="w-max rounded-r-md border-l border-line px-2.5 text-gray-200 hover:bg-raised"
           @update:model-value="autoRefresh = Number($event)"
         >
           <option v-for="choice in refreshChoices" :key="choice" :value="choice">
             {{ t(`usage.autoRefresh.${choice}`) }}
           </option>
         </UiSelect>
-        <button
-          v-tooltip="t('app.refresh')"
-          type="button"
-          class="rounded-md border border-line p-1.5 text-gray-400 transition hover:bg-raised hover:text-white"
-          :aria-label="t('app.refresh')"
-          @click="refresh"
-        >
-          <UiIcon name="refresh" :size="14" :class="{ 'animate-spin': loading }" />
-        </button>
       </div>
     </header>
 
@@ -413,6 +422,9 @@ const statusOptions = computed(() =>
         :options="filterOptions(dimension)"
         :selected="state.filters[dimension] ?? []"
         :format="(value: string) => dimensionLabel(dimension, value)"
+        :search-label="t('usage.filterSearch')"
+        :empty-label="t('usage.filterNone')"
+        :clear-label="t('usage.filtersClear')"
         @change="setFilter(dimension, $event)"
       />
       <button
@@ -544,7 +556,7 @@ const statusOptions = computed(() =>
             />
             <RankingTable
               :report="report"
-              :now="now"
+              :load-pairs="loadPairs"
               @filter="addFilter"
               @status="state.status = $event"
             />

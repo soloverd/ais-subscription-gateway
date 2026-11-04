@@ -1,7 +1,7 @@
 /* base 为 API 试用页与官网 AI Studio 一致的排版与 ms-button 按钮样式，进入 API 试用页时根元素带 studio 类 */
 html.studio {
-  --font-sans: 'Inter Variable', Inter, sans-serif;
-  --font-heading: 'Inter Tight Variable', 'Inter Tight', sans-serif;
+  --font-sans: 'Inter Variable', Inter, var(--font-cjk), sans-serif;
+  --font-heading: 'Inter Tight Variable', 'Inter Tight', var(--font-cjk), sans-serif;
   --font-mono: 'Google Sans Code Variable', 'Google Sans Mono', monospace;
   color-scheme: light;
   font-family: var(--font-sans);
@@ -19,6 +19,7 @@ html.studio[data-theme='dark'] {
 }
 
 html.studio * {
+  scrollbar-width: auto;
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -104,12 +105,6 @@ html.studio :is(code, pre, kbd) {
   border-radius: 50%;
 }
 
-[ms-button].ms-button-link {
-  border-color: transparent;
-  background-color: transparent;
-  color: var(--color-v3-text-link);
-}
-
 [ms-button].ms-button-filter-chip {
   padding: 8px 12px;
   border-color: var(--color-v3-outline-var);
@@ -163,40 +158,26 @@ html.studio :is(code, pre, kbd) {
   line-height: 18px;
 }
 
-[ms-button]:where(:not(.ms-button-link, [aria-disabled='true'], :disabled)):is(
-    :hover,
-    :focus-visible
-  ) {
+[ms-button]:where(:not([aria-disabled='true'], :disabled)):is(:hover, :focus-visible) {
   background-color: var(--color-v3-button-container-high);
   color: var(--color-v3-text-on-button);
 }
 
-[ms-button].ms-button-link:where(:not([aria-disabled='true'], :disabled)):is(
-    :hover,
-    :focus-visible
-  ) {
-  text-decoration: underline;
-}
-
-[ms-button]:where(:not(.ms-button-link)).ms-button-active,
-[ms-button].ms-button-icon.ms-button-borderless:where(:not(.ms-button-link)).ms-button-active {
+[ms-button].ms-button-active,
+[ms-button].ms-button-icon.ms-button-borderless.ms-button-active {
   background-color: var(--color-v3-button-container-accent);
   color: var(--color-v3-text-on-button);
 }
 
-[ms-button]:where(:not(.ms-button-link)):is([aria-disabled='true'], :disabled) {
+[ms-button]:is([aria-disabled='true'], :disabled) {
   background-color: var(--color-v3-surface-container);
   color: var(--color-v3-text-disable);
   cursor: not-allowed;
 }
 
-[ms-button].ms-button-borderless:where(:not(.ms-button-link)):is([aria-disabled='true'], :disabled),
+[ms-button].ms-button-borderless:is([aria-disabled='true'], :disabled),
 [ms-button].ms-button-secondary:is([aria-disabled='true'], :disabled) {
   background-color: transparent;
-}
-
-[ms-button].ms-button-link:is([aria-disabled='true'], :disabled) {
-  color: var(--color-v3-outline);
 }
 
 [ms-button]:focus-visible {
@@ -319,7 +300,7 @@ label:has(+ [ms-input]) {
 }
 
 [ms-input]:disabled {
-  color: var(--ms-input-disabled-color, var(--color-v3-text-disable));
+  color: var(--color-v3-text-disable);
   cursor: not-allowed;
 }
 
@@ -342,93 +323,53 @@ textarea[ms-input] {
   resize: none;
 }
 
-html.studio .hljs {
-  color: light-dark(#24292e, #adbac7);
+.ms-header {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 16px 20px 8px var(--ms-header-padding-left, 20px);
+  backdrop-filter: blur(5px);
+  background-color: var(--color-v3-overlay-background);
 }
 
-html.studio .hljs-doctag,
-html.studio .hljs-keyword,
-html.studio .hljs-meta .hljs-keyword,
-html.studio .hljs-template-tag,
-html.studio .hljs-template-variable,
-html.studio .hljs-type,
-html.studio .hljs-variable.language_ {
-  color: light-dark(#d73a49, #f47067);
+.ms-header::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 32px;
+  background: linear-gradient(to bottom, var(--color-v3-surface) 0, transparent 100%);
+  content: '';
+  pointer-events: none;
+  transform: translateY(100%);
 }
 
-html.studio .hljs-title,
-html.studio .hljs-title.class_,
-html.studio .hljs-title.class_.inherited__,
-html.studio .hljs-title.function_ {
-  color: light-dark(#6f42c1, #dcbdfb);
+@media screen and (max-width: 480px) {
+  .ms-header {
+    padding: 16px 8px 8px var(--ms-header-padding-left, 8px);
+  }
 }
 
-html.studio .hljs-attr,
-html.studio .hljs-attribute,
-html.studio .hljs-literal,
-html.studio .hljs-meta,
-html.studio .hljs-number,
-html.studio .hljs-operator,
-html.studio .hljs-selector-attr,
-html.studio .hljs-selector-class,
-html.studio .hljs-selector-id,
-html.studio .hljs-variable {
-  color: light-dark(#005cc5, #6cb6ff);
+.spin {
+  animation: spin 0.66s linear infinite;
 }
 
-html.studio .hljs-meta .hljs-string,
-html.studio .hljs-regexp,
-html.studio .hljs-string {
-  color: light-dark(#032f62, #96d0ff);
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
 }
 
-html.studio .hljs-built_in,
-html.studio .hljs-symbol {
-  color: light-dark(#e36209, #f69d50);
-}
+@keyframes moving-gradient {
+  0% {
+    background-position: -400px 0;
+  }
 
-html.studio .hljs-code,
-html.studio .hljs-comment,
-html.studio .hljs-formula {
-  color: light-dark(#6a737d, #768390);
-}
-
-html.studio .hljs-name,
-html.studio .hljs-quote,
-html.studio .hljs-selector-pseudo,
-html.studio .hljs-selector-tag {
-  color: light-dark(#22863a, #8ddb8c);
-}
-
-html.studio .hljs-subst {
-  color: light-dark(#24292e, #adbac7);
-}
-
-html.studio .hljs-section {
-  color: light-dark(#005cc5, #316dca);
-  font-weight: 700;
-}
-
-html.studio .hljs-bullet {
-  color: light-dark(#735c0f, #eac55f);
-}
-
-html.studio .hljs-emphasis {
-  color: light-dark(#24292e, #adbac7);
-  font-style: italic;
-}
-
-html.studio .hljs-strong {
-  color: light-dark(#24292e, #adbac7);
-  font-weight: 700;
-}
-
-html.studio .hljs-addition {
-  background-color: light-dark(#f0fff4, #1b4721);
-  color: light-dark(#22863a, #b4f1b4);
-}
-
-html.studio .hljs-deletion {
-  background-color: light-dark(#ffeef0, #78191b);
-  color: light-dark(#b31d28, #ffd8d3);
+  to {
+    background-position: 400px 0;
+  }
 }

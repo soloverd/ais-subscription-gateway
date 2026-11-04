@@ -21,14 +21,13 @@ interface ViewerDialog {
 }
 
 // ViewerMessage 是登录窗口连接上的服务端消息
-interface ViewerMessage extends Partial<ViewerFrame> {
-  type: string
-  status?: string
-  dialog?: ViewerDialog | null
-}
+type ViewerMessage =
+  | { type: 'status'; status: string }
+  | { type: 'dialog'; dialog: ViewerDialog | null }
+  | (ViewerFrame & { type: 'frame' })
 
 const props = defineProps<{ view: string; error: string }>()
-const emit = defineEmits<{ active: []; unavailable: []; cancel: []; close: [] }>()
+const emit = defineEmits<{ unavailable: []; cancel: []; hide: []; close: [] }>()
 const { t } = useI18n()
 
 const status = ref('')
@@ -51,7 +50,9 @@ let disposed = false
 let pendingFrame: ViewerFrame | null = null
 let drawSequence = 0
 let reconnectTimer = 0
-let resizeObserver: ResizeObserver | null = null
+const resizeObserver = new ResizeObserver(([entry]) => {
+  stageSize.value = { width: entry!.contentRect.width, height: entry!.contentRect.height }
+})
 let pendingMove: { x: number; y: number } | null = null
 let moveFrame = 0
 // pressed 是已发送按下的键，键为 KeyboardEvent.code，值为按下时发送的 key
@@ -66,18 +67,15 @@ let touch: {
   scrolling: boolean
 } | null = null
 
-const visible = computed(() => status.value !== '')
-const pageURL = computed(() => {
-  try {
-    return new URL(frame.value?.url ?? '')
-  } catch {
-    return null
-  }
-})
+const visible = computed(() => status.value !== '' || props.error !== '')
+const pageURL = computed(() => (frame.value === null ? null : new URL(frame.value.url)))
 const host = computed(() => pageURL.value?.hostname ?? '')
 const secure = computed(() => pageURL.value?.protocol === 'https:')
-const busy = computed(() => status.value === 'starting' || status.value === 'saving')
+const busy = computed(
+  () => props.error === '' && (status.value === 'starting' || status.value === 'saving'),
+)
 const statusText = computed(() => {
+  if (props.error !== '') return t('accounts.liveFailed')
   if (status.value === 'starting') return t('accounts.liveStarting')
   if (status.value === 'saving') return t('accounts.liveSaving')
   return t('accounts.liveWaiting')
@@ -130,39 +128,31 @@ function connect(): void {
 
 // receive 处理登录阶段、页面对话框与画面元数据
 function receive(message: ViewerMessage): void {
-  if (message.type === 'status' && message.status) {
-    if (status.value === '') emit('active')
+  if (message.type === 'status') {
     status.value = message.status
   } else if (message.type === 'dialog') {
-    dialog.value = message.dialog ?? null
+    dialog.value = message.dialog
     dialogText.value = message.dialog?.value ?? ''
     if (dialog.value !== null)
       void nextTick(() => (dialogInput.value ?? dialogConfirm.value)?.focus())
-  } else if (message.type === 'frame') {
-    pendingFrame = {
-      context: message.context ?? '',
-      url: message.url ?? '',
-      title: message.title ?? '',
-      width: message.width ?? 0,
-      height: message.height ?? 0,
-    }
+  } else {
+    pendingFrame = message
   }
 }
 
 // draw 解码一帧 JPEG 画到画布上，较早到达但较晚解码完成的帧被丢弃
 async function draw(blob: Blob): Promise<void> {
-  const meta = pendingFrame
-  if (meta === null) return
+  const meta = pendingFrame!
   const sequence = ++drawSequence
   const bitmap = await createImageBitmap(blob)
-  const element = canvas.value
-  if (sequence !== drawSequence || element === undefined) {
+  if (sequence !== drawSequence) {
     bitmap.close()
     return
   }
+  const element = canvas.value!
   if (element.width !== bitmap.width) element.width = bitmap.width
   if (element.height !== bitmap.height) element.height = bitmap.height
-  element.getContext('2d')?.drawImage(bitmap, 0, 0)
+  element.getContext('2d')!.drawImage(bitmap, 0, 0)
   bitmap.close()
   const first = frame.value === null
   frame.value = meta
@@ -184,10 +174,8 @@ function sendInput(message: Record<string, unknown>): void {
 
 // remotePoint 把指针位置换算为页面 CSS 像素
 function remotePoint(event: { clientX: number; clientY: number }): { x: number; y: number } {
-  const rect = canvas.value?.getBoundingClientRect()
-  const meta = frame.value
-  if (rect === undefined || meta === null || rect.width === 0 || rect.height === 0)
-    return { x: 0, y: 0 }
+  const rect = canvas.value!.getBoundingClientRect()
+  const meta = frame.value!
   return {
     x: Math.min(
       Math.max(((event.clientX - rect.left) / rect.width) * meta.width, 0),
@@ -201,19 +189,18 @@ function remotePoint(event: { clientX: number; clientY: number }): { x: number; 
 }
 
 function focusSink(): void {
-  sink.value?.focus({ preventScroll: true })
+  sink.value!.focus({ preventScroll: true })
 }
 
 // flushMove 写出等待中的指针移动，每个动画帧最多一次
 function flushMove(): void {
-  if (moveFrame !== 0) cancelAnimationFrame(moveFrame)
+  cancelAnimationFrame(moveFrame)
   moveFrame = 0
   if (pendingMove !== null) sendInput({ type: 'pointer', action: 'move', ...pendingMove })
   pendingMove = null
 }
 
 function pointerDown(event: PointerEvent): void {
-  if (frame.value === null) return
   if (event.pointerType === 'touch') {
     touch = {
       id: event.pointerId,
@@ -227,13 +214,12 @@ function pointerDown(event: PointerEvent): void {
   }
   event.preventDefault()
   focusSink()
-  canvas.value?.setPointerCapture(event.pointerId)
+  canvas.value!.setPointerCapture(event.pointerId)
   flushMove()
   sendInput({ type: 'pointer', action: 'down', ...remotePoint(event), button: event.button })
 }
 
 function pointerMove(event: PointerEvent): void {
-  if (frame.value === null) return
   if (event.pointerType === 'touch') {
     touchMove(event)
     return
@@ -243,7 +229,6 @@ function pointerMove(event: PointerEvent): void {
 }
 
 function pointerUp(event: PointerEvent): void {
-  if (frame.value === null) return
   if (event.pointerType === 'touch') {
     touchEnd(event)
     return
@@ -286,9 +271,8 @@ function touchEnd(event: PointerEvent): void {
 }
 
 function wheel(event: WheelEvent): void {
-  if (frame.value === null) return
   event.preventDefault()
-  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? frame.value.height : 1
+  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? frame.value!.height : 1
   flushMove()
   sendInput({
     type: 'wheel',
@@ -339,13 +323,13 @@ function keyUp(event: KeyboardEvent): void {
 function paste(event: ClipboardEvent): void {
   event.preventDefault()
   releaseKeys((key) => key === 'Control' || key === 'Meta')
-  const text = event.clipboardData?.getData('text/plain') ?? ''
+  const text = event.clipboardData!.getData('text/plain')
   if (text !== '') sendInput({ type: 'text', text })
 }
 
 function compositionEnd(event: CompositionEvent): void {
   if (event.data) sendInput({ type: 'text', text: event.data })
-  if (sink.value) sink.value.value = ''
+  sink.value!.value = ''
 }
 
 // textInput 转发手机键盘直接提交的字符、换行与退格
@@ -355,7 +339,7 @@ function textInput(event: Event): void {
   if (input.inputType === 'insertText' && input.data) sendInput({ type: 'text', text: input.data })
   else if (input.inputType === 'insertLineBreak') press('Enter')
   else if (input.inputType === 'deleteContentBackward') press('Backspace')
-  if (sink.value) sink.value.value = ''
+  sink.value!.value = ''
 }
 
 function blur(): void {
@@ -371,19 +355,15 @@ function answer(accept: boolean): void {
 }
 
 onMounted(() => {
-  resizeObserver = new ResizeObserver(([entry]) => {
-    if (entry)
-      stageSize.value = { width: entry.contentRect.width, height: entry.contentRect.height }
-  })
-  if (stage.value) resizeObserver.observe(stage.value)
+  resizeObserver.observe(stage.value!)
   connect()
 })
 
 onBeforeUnmount(() => {
   disposed = true
   window.clearTimeout(reconnectTimer)
-  if (moveFrame !== 0) cancelAnimationFrame(moveFrame)
-  resizeObserver?.disconnect()
+  cancelAnimationFrame(moveFrame)
+  resizeObserver.disconnect()
   socket?.close()
 })
 </script>
@@ -409,7 +389,11 @@ onBeforeUnmount(() => {
         </div>
         <span class="flex shrink-0 items-center gap-1.5 text-xs text-gray-400" aria-live="polite">
           <UiIcon v-if="busy" name="spinner" :size="14" />
-          <span v-else class="h-2 w-2 rounded-full bg-green-500"></span>
+          <span
+            v-else
+            class="h-2 w-2 rounded-full"
+            :class="error === '' ? 'bg-green-500' : 'bg-red-500'"
+          ></span>
           <span class="max-sm:sr-only">{{ statusText }}</span>
         </span>
         <button
@@ -421,6 +405,14 @@ onBeforeUnmount(() => {
           @click="actualSize = !actualSize"
         >
           <UiIcon :name="actualSize ? 'zoomFit' : 'zoomActual'" :size="16" />
+        </button>
+        <button
+          v-if="error === ''"
+          type="button"
+          class="shrink-0 rounded px-3 py-1.5 text-sm text-gray-300 transition hover:bg-raised hover:text-white"
+          @click="emit('hide')"
+        >
+          {{ t('accounts.liveHide') }}
         </button>
         <button
           type="button"
@@ -521,15 +513,19 @@ onBeforeUnmount(() => {
         </div>
         <div
           v-if="error !== ''"
-          class="absolute inset-0 flex items-center justify-center bg-black/40 px-4"
+          class="absolute inset-0 flex items-center justify-center bg-black/40 p-4"
           role="alert"
         >
-          <div class="w-full max-w-md rounded-lg border border-line bg-panel p-5 shadow-2xl">
-            <p class="mb-2 flex items-center gap-2 text-sm font-medium text-red-300">
+          <div
+            class="flex max-h-full w-full max-w-md flex-col rounded-lg border border-line bg-panel p-5 shadow-2xl"
+          >
+            <p class="mb-2 flex shrink-0 items-center gap-2 text-sm font-medium text-red-300">
               <UiIcon name="warning" :size="16" />
               {{ t('accounts.liveFailed') }}
             </p>
-            <p class="mb-4 text-sm [overflow-wrap:anywhere] whitespace-pre-wrap text-gray-300">
+            <p
+              class="mb-4 min-h-0 overflow-y-auto text-sm [overflow-wrap:anywhere] whitespace-pre-wrap text-gray-300"
+            >
               {{ error }}
             </p>
             <div class="flex justify-end">

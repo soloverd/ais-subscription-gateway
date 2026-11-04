@@ -11,7 +11,7 @@ import (
 var ErrAuthenticationRequired = errors.New("隔离登录态失效")
 
 // ErrRegionNotSupported 表示 AI Studio 不支持当前出口地区或账户
-var ErrRegionNotSupported = errors.New("AI Studio가 현재 접속 지역 또는 계정을 지원하지 않음")
+var ErrRegionNotSupported = errors.New("AI Studio가 현재 접속 지역 또는 계정을 지원하지 않음, 이 계정이나 전역 프록시를 지원 지역 출구로 바꾸세요")
 
 // AvailableRegionsURL 是官网在地区或账户不受支持时跳转的页面
 const AvailableRegionsURL = "https://aistudio.google.com/docs/available-regions"
@@ -34,21 +34,17 @@ const (
 	StartupBootstrappingWAA StartupStage = "bootstrapping_waa"
 )
 
-// DefaultBootstrapPrompt 是 Options 未指定 BootstrapPrompt 时 WAA bootstrap 写入官网输入框并提交的提示词
-const DefaultBootstrapPrompt = "Hello"
-
 // Options 定义单个 AI Studio 账户的原生 Camoufox runtime
 type Options struct {
 	ExecutablePath   string
 	StorageStatePath string
 	Model            string
-	BootstrapPrompt  string
 	Locale           string
 	Timezone         string
 	Proxy            string
 	ProxyBypass      string
 	Headless         bool
-	TemporaryChat    bool
+	AuthUser         int
 	CacheDirectory   string
 	ReadyTimeout     time.Duration
 	Log              io.Writer
@@ -89,6 +85,16 @@ type storageCookie struct {
 	PartitionKey string  `json:"partitionKey,omitempty"`
 }
 
+// cookieKey 标识浏览器中的一个 Cookie
+type cookieKey struct {
+	name, domain, path, partition string
+}
+
+// key 返回 Cookie 的标识
+func (cookie storageCookie) key() cookieKey {
+	return cookieKey{cookie.Name, cookie.Domain, cookie.Path, cookie.PartitionKey}
+}
+
 type storageOrigin struct {
 	Origin       string             `json:"origin"`
 	LocalStorage []localStorageItem `json:"localStorage"`
@@ -97,4 +103,11 @@ type storageOrigin struct {
 type localStorageItem struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
+}
+
+// PageCatalog 是会话页面载入时 GetLoggingContext、GetAiStudioBenefitTier 与 ListModels 的响应正文
+type PageCatalog struct {
+	Logging []byte
+	Tier    []byte
+	Models  []byte
 }

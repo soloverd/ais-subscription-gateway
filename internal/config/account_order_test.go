@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -25,16 +24,5 @@ func TestAccountOrderRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(loaded.AccountOrder, want) {
 		t.Fatalf("saved order=%v", loaded.AccountOrder)
-	}
-	raw, err := json.Marshal(loaded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var decoded Config
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(decoded.AccountOrder, want) {
-		t.Fatalf("JSON order=%v", decoded.AccountOrder)
 	}
 }

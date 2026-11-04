@@ -1,11 +1,8 @@
 package aistudio
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"strings"
 )
 
 const (
@@ -15,46 +12,7 @@ const (
 	termsOnboardingSource = 5
 )
 
-// EnsureTermsAccepted 读取账户的官网日志上下文，账户尚未同意 AI Studio 条款时按官网条款对话框或 onboarding 表单发送 AcceptTerms
-func (c *Client) EnsureTermsAccepted(ctx context.Context, accountID string) error {
-	accountID = strings.TrimSpace(accountID)
-	c.termsMu.Lock()
-	_, accepted := c.termsAccepted[accountID]
-	c.termsMu.Unlock()
-	if accepted {
-		return nil
-	}
-	response, err := c.do(ctx, "GetLoggingContext", accountID, "", []byte("[]"), false)
-	if err != nil {
-		return err
-	}
-	raw, err := io.ReadAll(response.Body)
-	response.Body.Close()
-	if err != nil {
-		return fmt.Errorf("读取 GetLoggingContext: %w", err)
-	}
-	body, err := acceptTermsBody(raw)
-	if err != nil {
-		return err
-	}
-	if body != nil {
-		response, err := c.do(ctx, "AcceptTerms", accountID, "", body, false)
-		if err != nil {
-			return err
-		}
-		_, err = io.Copy(io.Discard, response.Body)
-		response.Body.Close()
-		if err != nil {
-			return fmt.Errorf("读取 AcceptTerms: %w", err)
-		}
-	}
-	c.termsMu.Lock()
-	c.termsAccepted[accountID] = struct{}{}
-	c.termsMu.Unlock()
-	return nil
-}
-
-// acceptTermsBody 按官网要求同意条款的条件读取 GetLoggingContext：第 6 字段为否且有第 7 字段时返回不订阅邮件的 AcceptTerms 请求体，否则返回 nil；第 10 字段为空或 0 时与官网 onboarding 表单相同，否则与条款对话框相同
+// acceptTermsBody 按官网同意条款的条件读取 GetLoggingContext，需要同意时返回不订阅邮件的 AcceptTerms 请求体，否则返回 nil
 func acceptTermsBody(raw []byte) ([]byte, error) {
 	value, err := decodeJSONValue(raw)
 	if err != nil {

@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { useI18n } from '@/i18n'
 import CodeDialog from './CodeDialog.vue'
 import { codeOptions, generateCode, type CodeLanguage } from './code'
-import { buildRequest } from './request'
+import { agentConfig, buildRequest, continuation } from './request'
 import { usePlayground } from './session'
 import type { Turn } from './types'
 
@@ -17,7 +17,7 @@ const docs = computed(() =>
     : 'https://github.com/Mag1cFall/AIStudio2API/blob/main/README_en.md#api-usage',
 )
 
-// turns 是示例代码中的对话：已有轮次加上输入框中尚未发送的内容，即按下运行时页面发出的请求；输入框为空且最后不是用户轮次时与官网一样以 INSERT_INPUT_HERE 作为新的用户轮次
+// turns 是示例代码中的对话：已有轮次加上输入框中尚未发送的内容，输入框为空且最后不是用户轮次时以 INSERT_INPUT_HERE 作为新的用户轮次
 const turns = computed<Turn[]>(() => {
   const draft = session.draft.trim()
   if (draft === '' && session.attachments.length === 0) {
@@ -40,11 +40,12 @@ const turns = computed<Turn[]>(() => {
 
 // code 按语言生成当前对话的示例代码，请求与页面运行时以所选协议发送的请求相同
 function code(language: CodeLanguage): string {
+  const input = continuation(session.settings.protocol, turns.value)
   return generateCode(language, {
     model: currentModel.value,
     modelID: currentModel.value?.id ?? session.settings.model,
     baseURL: window.location.origin,
-    request: buildRequest(session.settings, currentModel.value, turns.value),
+    request: buildRequest(session.settings, currentModel.value, input.turns),
     protocol: session.settings.protocol,
     stream: session.settings.stream,
     images: {
@@ -52,10 +53,19 @@ function code(language: CodeLanguage): string {
       size: session.settings.openAISize,
       quality: session.settings.imageQuality,
     },
+    agent: agentConfig(session.settings, currentModel.value),
+    previous: input.previous,
   })
 }
+
+// options 是可选的代码语言：以 Interactions 发送时 OpenAI SDK 无法表达 agent 请求，只列 Gemini SDK 与 REST
+const options = computed(() =>
+  session.settings.protocol === 'interactions'
+    ? codeOptions.filter((option) => !option.value.startsWith('openai-'))
+    : codeOptions,
+)
 </script>
 
 <template>
-  <CodeDialog v-model:open="open" :options="codeOptions" :code="code" :docs="docs" />
+  <CodeDialog v-model:open="open" :options="options" :code="code" :docs="docs" />
 </template>

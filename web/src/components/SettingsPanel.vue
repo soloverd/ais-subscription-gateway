@@ -1,18 +1,27 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { api } from '@/api'
+import { maskKey, splitKeys } from '@/apikey'
+import { keepPage } from '@/desktop'
 import { channelLabelKey, useI18n, type TranslationKey } from '@/i18n'
 import type { IconName } from '@/icons'
 import { maskedProxy } from '@/proxy'
-import type { ServiceConfig, UpstreamChannel } from '@/types'
+import type { Account, FirstEventLatency, Model, ServiceConfig, UpstreamChannel } from '@/types'
 import { useQueryParam } from '@/url'
+import ApiKeyInput from './ApiKeyInput.vue'
+import DurationInput from './DurationInput.vue'
+import PairRows from './PairRows.vue'
 import SettingRow from './SettingRow.vue'
 import UiIcon from './UiIcon.vue'
 import UiSelect from './UiSelect.vue'
 import UiSwitch from './UiSwitch.vue'
+import FilterMenu from './FilterMenu.vue'
 
 const props = defineProps<{
   config: ServiceConfig | null
+  accounts: Account[]
+  models: Model[]
   loading: boolean
   error: string
 }>()
@@ -22,49 +31,12 @@ const emit = defineEmits<{
   notice: [message: string, tone: 'success' | 'error']
 }>()
 
-const { t, errorText } = useI18n()
+const { t, locale, errorText } = useI18n()
 const saving = ref(false)
 const revealKey = ref(false)
 const adminPassword = ref('')
-const form = reactive<ServiceConfig>({
-  auto_start: false,
-  request_body_log: false,
-  log_file: true,
-  log_max_total_mb: 500,
-  admin_auth_enabled: false,
-  admin_username: 'admin',
-  admin_password_set: false,
-  build_native_nonstream: true,
-  nonstream_keepalive: true,
-  fake_stream: false,
-  youtube_links: false,
-  auth_states: 'auth',
-  listen_addr: '127.0.0.1:2048',
-  preview_listen_addr: '127.0.0.1:2050',
-  proxy_api_key: '',
-  active_listen_addr: '127.0.0.1:2048',
-  active_preview_listen_addr: '127.0.0.1:2050',
-  active_proxy_api_key: '',
-  management_restart_required: false,
-  service_restart_required: false,
-  proxy: '',
-  active_proxy: '',
-  proxy_pool: [],
-  init_timeout: '2m',
-  request_timeout: '30m',
-  warm_worker_limit: 5,
-  max_active_workers: 10,
-  warm_startup_concurrency: 5,
-  per_account_concurrency: 2,
-  routing_strategy: 'round-robin',
-  upstream_channels: ['playground', 'build'],
-  model_mapping: '',
-  model_channels: '',
-  waa_backend: 'camoufox',
-  temporary_chat: false,
-  media_output: 'inline',
-  media_base_url: '',
-})
+// form 是编辑中的配置，读到 props.config 后由 resetForm 填入，表单只在读到配置后显示
+const form = reactive({} as ServiceConfig)
 
 type SectionID = 'service' | 'capacity' | 'upstream' | 'network' | 'security'
 
@@ -86,6 +58,7 @@ const sections: {
       'listen_addr',
       'preview_listen_addr',
       'proxy_api_key',
+      'api_key_accounts',
       'auth_states',
       'media_output',
       'media_base_url',
@@ -117,10 +90,16 @@ const sections: {
       'nonstream_keepalive',
       'fake_stream',
       'youtube_links',
+      'search_model_aliases',
+      'google_search',
+      'continuation_rewrite',
+      'continuation_prompt',
+      'strip_thought_signatures',
       'waa_backend',
-      'temporary_chat',
       'init_timeout',
       'request_timeout',
+      'first_event_hedge',
+      'first_event_hedge_models',
     ],
   },
   {
@@ -149,7 +128,7 @@ const section = useQueryParam<SectionID>(
   sections.map((item) => item.id),
   'service',
 )
-const current = computed(() => sections.find((item) => item.id === section.value) ?? sections[0]!)
+const current = computed(() => sections.find((item) => item.id === section.value)!)
 
 const upstreamChannelOptions: UpstreamChannel[] = ['playground', 'build']
 const inputClass =
@@ -167,19 +146,141 @@ const changedFields = computed(() => {
 const changedCount = computed(() => changedFields.value.size + (adminPassword.value ? 1 : 0))
 
 // sectionChanged 判断分组是否有未保存的修改
-function sectionChanged(id: SectionID): boolean {
-  const target = sections.find((item) => item.id === id)
-  if (id === 'security' && adminPassword.value) return true
-  return target?.fields.some((field) => changedFields.value.has(field)) ?? false
+function sectionChanged(item: (typeof sections)[number]): boolean {
+  if (item.id === 'security' && adminPassword.value) return true
+  return item.fields.some((field) => changedFields.value.has(field))
 }
 
-// toggleUpstreamChannel 切换通道并保持配置顺序，至少保留一个通道
+// toggleUpstreamChannel 切换通道并保持配置顺序
 function toggleUpstreamChannel(channel: UpstreamChannel, enabled: boolean): void {
   const selected = new Set(form.upstream_channels)
   if (enabled) selected.add(channel)
-  else if (selected.size > 1) selected.delete(channel)
+  else selected.delete(channel)
   form.upstream_channels = upstreamChannelOptions.filter((option) => selected.has(option))
 }
+
+// latencies 是各模型与通道近期原请求首事件等待的 p95
+const latencies = ref<FirstEventLatency[]>([])
+// busiest 是近期样本最多的模型与通道
+const busiest = computed(() =>
+  latencies.value.reduce<FirstEventLatency | undefined>(
+    (best, item) => (best === undefined || item.samples > best.samples ? item : best),
+    undefined,
+  ),
+)
+// suggestedSeconds 是 busiest 的 p95 向上取整的秒数，没有样本时为 60
+const suggestedSeconds = computed(() =>
+  busiest.value === undefined ? 60 : Math.max(1, Math.ceil(busiest.value.p95_ms / 1000)),
+)
+// hedgeMode 是首字超时备用请求的方式，选自定义时填入建议的秒数
+const hedgeMode = computed({
+  get: () =>
+    form.first_event_hedge === 'off' || form.first_event_hedge === 'auto'
+      ? form.first_event_hedge
+      : 'custom',
+  set: (mode: string) => {
+    form.first_event_hedge = mode === 'custom' ? String(suggestedSeconds.value) : mode
+  },
+})
+
+// hedgeHint 是所选方式的说明：自动时写取值规则，自定义时给出 busiest 的近期 p95 作参考
+const hedgeHint = computed(() => {
+  if (hedgeMode.value === 'auto') return t('settings.firstEventHedgeAutoHint')
+  const item = busiest.value
+  if (hedgeMode.value !== 'custom' || item === undefined) return ''
+  return t('settings.firstEventHedgeCustomHint')
+    .replace('{model}', item.model)
+    .replace(
+      '{seconds}',
+      new Intl.NumberFormat(locale.value, { maximumFractionDigits: 1 }).format(item.p95_ms / 1000),
+    )
+})
+
+// environmentKey 返回决定该字段的进程环境变量名，字段不由环境变量决定时为 undefined
+function environmentKey(field: keyof ServiceConfig): string | undefined {
+  const key = field === 'auth_states' ? 'AISTUDIO_AUTH_STATES' : field.toUpperCase()
+  return props.config?.environment.includes(key) ? key : undefined
+}
+
+// apiKeyList 是表单中逗号分隔的各个 API key
+const apiKeyList = computed(() => splitKeys(form.proxy_api_key ?? ''))
+// activeKeys 是生效中的各个 API key
+const activeKeys = computed(() => splitKeys(props.config?.active_proxy_api_key ?? ''))
+
+// keyAccounts 把 api_key_accounts 解析为各 key 可用的账户 ID
+function keyAccounts(value: string): Map<string, string[]> {
+  const result = new Map<string, string[]>()
+  for (const item of value.split(',')) {
+    const index = item.lastIndexOf(':')
+    const ids = item
+      .slice(index + 1)
+      .split('|')
+      .map((id) => id.trim())
+      .filter(Boolean)
+    if (index > 0 && ids.length > 0) result.set(item.slice(0, index).trim(), ids)
+  }
+  return result
+}
+
+// writeKeyAccounts 按 API key 的顺序写回 api_key_accounts，去掉已不在 key 列表中的绑定
+function writeKeyAccounts(bindings: Map<string, string[]>): void {
+  form.api_key_accounts = apiKeyList.value
+    .filter((key) => bindings.has(key))
+    .map((key) => `${key}:${bindings.get(key)!.join('|')}`)
+    .join(',')
+}
+
+// keyBindings 是表单中各 API key 可用的账户 ID
+const keyBindings = computed(() => keyAccounts(form.api_key_accounts ?? ''))
+
+// setKeyAccounts 设置 key 可用的账户，空列表表示可用全部账户
+function setKeyAccounts(key: string, ids: string[]): void {
+  const bindings = new Map(keyBindings.value)
+  if (ids.length > 0) bindings.set(key, ids)
+  else bindings.delete(key)
+  writeKeyAccounts(bindings)
+}
+
+// accountLabel 返回账户 ID 对应的显示名称
+function accountLabel(id: string): string {
+  return props.accounts.find((account) => account.id === id)?.label ?? id
+}
+
+// keyAccountsLabel 是 key 账户选择按钮的文字：未选时为全部账户，只选一个时为该账户
+function keyAccountsLabel(key: string): string {
+  const ids = keyBindings.value.get(key) ?? []
+  if (ids.length === 0) return t('settings.keyAccountsAll')
+  return ids.length === 1 ? accountLabel(ids[0]!) : t('settings.keyAccountsSome')
+}
+
+// modelIDs 是模型目录中的全部模型 ID
+const modelIDs = computed(() => props.models.map((model) => model.id))
+
+// modelOptions 是行编辑器中可选的模型
+const modelOptions = computed(() => modelIDs.value.map((id) => ({ value: id, label: id })))
+
+// channelOptions 是行编辑器中可选的上游通道
+const channelOptions = computed(() =>
+  upstreamChannelOptions.map((channel) => ({ value: channel, label: t(channelLabelKey(channel)) })),
+)
+
+// hedgeModels 是表单中发起备用请求的模型
+const hedgeModels = computed(() =>
+  (form.first_event_hedge_models ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean),
+)
+
+// hedgeModelsLabel 是备用请求模型选择按钮的文字
+const hedgeModelsLabel = computed(() => {
+  if (hedgeModels.value.length === 0) return t('settings.hedgeModelsNone')
+  return hedgeModels.value.length === 1 ? hedgeModels.value[0]! : t('settings.hedgeModelsSome')
+})
+
+watch(apiKeyList, () => {
+  if (form.api_key_accounts !== undefined) writeKeyAccounts(keyAccounts(form.api_key_accounts))
+})
 
 // resetForm 用已保存配置覆盖表单
 function resetForm(config: ServiceConfig): void {
@@ -200,8 +301,31 @@ function warnUnsaved(event: BeforeUnloadEvent): void {
   if (changedCount.value > 0) event.preventDefault()
 }
 
-onMounted(() => window.addEventListener('beforeunload', warnUnsaved))
-onUnmounted(() => window.removeEventListener('beforeunload', warnUnsaved))
+// releasePage 撤销关闭桌面窗口时为未保存修改保留页面的登记
+const releasePage = keepPage(() => changedCount.value > 0)
+
+// removeLeaveGuard 撤销离开管理端时对未保存修改的确认，确认离开时放弃修改
+const removeLeaveGuard = useRouter().beforeEach((to) => {
+  if (to.name === 'console' || changedCount.value === 0) return true
+  if (!window.confirm(t('settings.leaveUnsaved'))) return false
+  if (props.config !== null) resetForm(props.config)
+  return true
+})
+
+onMounted(() => {
+  window.addEventListener('beforeunload', warnUnsaved)
+  void api
+    .firstEventLatency()
+    .then((items) => {
+      latencies.value = items
+    })
+    .catch(() => undefined)
+})
+onUnmounted(() => {
+  window.removeEventListener('beforeunload', warnUnsaved)
+  releasePage()
+  removeLeaveGuard()
+})
 
 // saveConfig 原子保存全局配置
 async function saveConfig(): Promise<void> {
@@ -231,7 +355,9 @@ async function saveConfig(): Promise<void> {
 
 <template>
   <section class="flex min-h-0 flex-1 flex-col">
-    <header class="border-b border-line px-4 py-4 md:px-8">
+    <header
+      class="border-b border-line px-4 py-4 md:px-[max(2rem,calc((100%_-_var(--container-4xl)_-_14rem)/2_+_2rem))]"
+    >
       <h2 class="text-xl font-semibold text-white">{{ t('section.settings.title') }}</h2>
       <p class="mt-1 text-sm text-gray-500">{{ t('section.settings.description') }}</p>
     </header>
@@ -248,40 +374,42 @@ async function saveConfig(): Promise<void> {
     </div>
     <form
       v-else
-      class="flex min-h-0 flex-1 flex-col md:flex-row"
+      class="min-h-0 flex-1 overflow-auto [scrollbar-gutter:stable_both-edges]"
       novalidate
       @submit.prevent="saveConfig"
     >
-      <nav
-        class="flex shrink-0 gap-1 overflow-x-auto border-b border-line p-2 md:w-56 md:flex-col md:border-r md:border-b-0 md:p-4"
-        :aria-label="t('section.settings.title')"
+      <div
+        class="mx-auto flex w-full max-w-[calc(var(--container-4xl)_+_14rem)] flex-col md:flex-row"
       >
-        <button
-          v-for="item in sections"
-          :key="item.id"
-          type="button"
-          class="flex shrink-0 items-center gap-2 rounded-md px-3 py-2 text-left text-sm whitespace-nowrap transition-colors md:whitespace-normal"
-          :class="
-            section === item.id
-              ? 'bg-raised text-white'
-              : 'text-gray-400 hover:bg-raised/60 hover:text-gray-200'
-          "
-          :aria-current="section === item.id ? 'page' : undefined"
-          @click="section = item.id"
+        <nav
+          class="sticky top-0 z-10 flex shrink-0 gap-1 overflow-x-auto border-b border-line bg-canvas p-2 md:w-56 md:flex-col md:self-start md:border-b-0 md:p-4 md:pl-5"
+          :aria-label="t('section.settings.title')"
         >
-          <UiIcon :name="item.icon" :size="15" />
-          <span class="flex-1">{{ t(item.label) }}</span>
-          <span
-            v-if="sectionChanged(item.id)"
-            v-tooltip="t('settings.unsavedSection')"
-            class="h-1.5 w-1.5 rounded-full bg-amber-400"
-            ><span class="sr-only">{{ t('settings.unsavedSection') }}</span></span
+          <button
+            v-for="item in sections"
+            :key="item.id"
+            type="button"
+            class="flex shrink-0 items-center gap-2 rounded-md px-3 py-2 text-left text-sm whitespace-nowrap transition-colors md:whitespace-normal"
+            :class="
+              section === item.id
+                ? 'bg-raised text-white'
+                : 'text-gray-400 hover:bg-raised/60 hover:text-gray-200'
+            "
+            :aria-current="section === item.id ? 'page' : undefined"
+            @click="section = item.id"
           >
-        </button>
-      </nav>
+            <UiIcon :name="item.icon" :size="15" />
+            <span class="flex-1">{{ t(item.label) }}</span>
+            <span
+              v-if="sectionChanged(item)"
+              v-tooltip="t('settings.unsavedSection')"
+              class="h-1.5 w-1.5 rounded-full bg-amber-400"
+              ><span class="sr-only">{{ t('settings.unsavedSection') }}</span></span
+            >
+          </button>
+        </nav>
 
-      <div class="min-h-0 flex-1 overflow-auto">
-        <div class="mx-auto max-w-4xl px-4 pt-4 pb-28 md:px-8 md:pt-6">
+        <div class="min-w-0 flex-1 px-4 pt-4 pb-28 md:px-8 md:pt-6">
           <div
             v-if="config.service_restart_required"
             class="mb-3 rounded-md border border-blue-500/30 bg-blue-500/10 px-4 py-2.5 text-sm text-blue-200"
@@ -305,6 +433,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.autoStartHelp')"
               effect="management"
               :changed="changedFields.has('auto_start')"
+              :env="environmentKey('auto_start')"
             >
               <UiSwitch id="setting-auto-start" v-model="form.auto_start" />
             </SettingRow>
@@ -314,6 +443,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.listenHelp')"
               effect="management"
               :changed="changedFields.has('listen_addr')"
+              :env="environmentKey('listen_addr')"
             >
               <input
                 id="setting-listen"
@@ -335,6 +465,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.previewListenHelp')"
               effect="management"
               :changed="changedFields.has('preview_listen_addr')"
+              :env="environmentKey('preview_listen_addr')"
             >
               <input
                 id="setting-preview-listen"
@@ -356,31 +487,63 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.apiKeyHelp')"
               effect="management"
               :changed="changedFields.has('proxy_api_key')"
+              :env="environmentKey('proxy_api_key')"
             >
-              <div class="flex gap-2">
-                <input
-                  id="setting-api-key"
-                  v-model="form.proxy_api_key"
-                  :type="revealKey ? 'text' : 'password'"
-                  :class="inputClass"
-                  autocomplete="new-password"
-                  spellcheck="false"
-                />
-                <button
-                  class="shrink-0 rounded-md border border-line bg-raised px-3 text-xs text-gray-300 transition hover:bg-line"
-                  type="button"
-                  @click="revealKey = !revealKey"
-                >
-                  {{ revealKey ? t('settings.hide') : t('settings.reveal') }}
-                </button>
-              </div>
-              <p
-                v-if="form.proxy_api_key !== config.active_proxy_api_key"
-                class="mt-1 text-xs break-all text-gray-500"
+              <ApiKeyInput
+                v-model="form.proxy_api_key"
+                v-model:revealed="revealKey"
+                input-id="setting-api-key"
+              />
+              <div
+                v-if="apiKeyList.join(',') !== activeKeys.join(',')"
+                class="mt-1.5 flex flex-wrap items-center gap-1 text-xs text-gray-500"
               >
                 {{ t('settings.activeValue') }}:
-                {{ revealKey ? config.active_proxy_api_key || t('common.empty') : '••••••••' }}
-              </p>
+                <span
+                  v-for="key in activeKeys"
+                  :key="key"
+                  class="rounded border border-line px-1.5 py-0.5 font-mono break-all text-gray-400"
+                  >{{ revealKey ? key : maskKey(key) }}</span
+                >
+                <span v-if="activeKeys.length === 0">{{ t('common.empty') }}</span>
+              </div>
+            </SettingRow>
+            <SettingRow
+              v-if="apiKeyList.length > 0 && accounts.length > 0"
+              :label="t('settings.apiKeyAccounts')"
+              group-id="setting-api-key-accounts"
+              :description="t('settings.apiKeyAccountsHelp')"
+              effect="immediate"
+              :changed="changedFields.has('api_key_accounts')"
+              :env="environmentKey('api_key_accounts')"
+            >
+              <div
+                role="group"
+                aria-labelledby="setting-api-key-accounts-label"
+                class="max-h-60 space-y-2 overflow-y-auto pr-1 [scrollbar-width:thin]"
+              >
+                <div
+                  v-for="key in apiKeyList"
+                  :key="key"
+                  class="flex items-center justify-between gap-3"
+                >
+                  <span
+                    data-api-key
+                    class="min-w-0 rounded border border-line bg-raised px-2 py-0.5 font-mono text-xs break-all text-gray-200"
+                    >{{ revealKey ? key : maskKey(key) }}</span
+                  >
+                  <FilterMenu
+                    :label="keyAccountsLabel(key)"
+                    :options="accounts.map((account) => account.id)"
+                    :selected="keyBindings.get(key) ?? []"
+                    :format="accountLabel"
+                    :search-label="t('settings.accountSearch')"
+                    :empty-label="t('settings.accountNone')"
+                    :clear-label="t('settings.keyAccountsClear')"
+                    @change="setKeyAccounts(key, $event)"
+                  />
+                </div>
+              </div>
             </SettingRow>
             <SettingRow
               :label="t('settings.authPath')"
@@ -388,6 +551,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.authPathHelp')"
               effect="service"
               :changed="changedFields.has('auth_states')"
+              :env="environmentKey('auth_states')"
             >
               <input
                 id="setting-auth-path"
@@ -403,6 +567,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.mediaOutputHelp')"
               effect="service"
               :changed="changedFields.has('media_output')"
+              :env="environmentKey('media_output')"
             >
               <UiSelect id="setting-media-output" v-model="form.media_output" :class="inputClass">
                 <option value="inline">{{ t('settings.mediaOutputInline') }}</option>
@@ -416,6 +581,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.mediaBaseURLHelp')"
               effect="service"
               :changed="changedFields.has('media_base_url')"
+              :env="environmentKey('media_base_url')"
             >
               <input
                 id="setting-media-base-url"
@@ -435,6 +601,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.warmWorkerLimitHelp')"
               effect="immediate"
               :changed="changedFields.has('warm_worker_limit')"
+              :env="environmentKey('warm_worker_limit')"
             >
               <input
                 id="setting-warm"
@@ -450,6 +617,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.maxActiveWorkersHelp')"
               effect="immediate"
               :changed="changedFields.has('max_active_workers')"
+              :env="environmentKey('max_active_workers')"
             >
               <input
                 id="setting-max"
@@ -465,6 +633,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.warmStartupConcurrencyHelp')"
               effect="immediate"
               :changed="changedFields.has('warm_startup_concurrency')"
+              :env="environmentKey('warm_startup_concurrency')"
             >
               <input
                 id="setting-startup"
@@ -481,6 +650,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.perAccountConcurrencyHelp')"
               effect="immediate"
               :changed="changedFields.has('per_account_concurrency')"
+              :env="environmentKey('per_account_concurrency')"
             >
               <input
                 id="setting-per-account"
@@ -496,6 +666,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.routingHelp')"
               effect="immediate"
               :changed="changedFields.has('routing_strategy')"
+              :env="environmentKey('routing_strategy')"
             >
               <UiSelect id="setting-routing" v-model="form.routing_strategy" :class="inputClass">
                 <option value="round-robin">{{ t('settings.routingRoundRobin') }}</option>
@@ -511,16 +682,22 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.upstreamChannelsHelp')"
               effect="service"
               :changed="changedFields.has('upstream_channels')"
+              :env="environmentKey('upstream_channels')"
             >
               <div
                 role="group"
                 aria-labelledby="setting-channels-label"
-                class="flex flex-wrap gap-4 pt-1"
+                class="grid grid-cols-2 gap-2"
               >
                 <label
                   v-for="channel in upstreamChannelOptions"
                   :key="channel"
-                  class="flex items-center gap-2 text-sm text-gray-300"
+                  class="flex h-9 cursor-pointer items-center gap-2.5 rounded-md border px-3 text-sm transition-colors has-[:disabled]:cursor-default"
+                  :class="
+                    form.upstream_channels.includes(channel)
+                      ? 'border-blue-500/60 bg-blue-500/10 text-gray-100'
+                      : 'border-line bg-canvas text-gray-400 hover:border-gray-600 hover:text-gray-200'
+                  "
                 >
                   <input
                     type="checkbox"
@@ -539,34 +716,41 @@ async function saveConfig(): Promise<void> {
             </SettingRow>
             <SettingRow
               :label="t('settings.modelMapping')"
-              control-id="setting-model-mapping"
+              group-id="setting-model-mapping"
               :description="t('settings.modelMappingHelp')"
               effect="service"
               :changed="changedFields.has('model_mapping')"
+              :env="environmentKey('model_mapping')"
             >
-              <input
-                id="setting-model-mapping"
-                v-model.trim="form.model_mapping"
-                :class="inputClass"
-                placeholder="claude-haiku-5-5:gemini-3.8-flash"
-                autocomplete="off"
-                spellcheck="false"
+              <PairRows
+                role="group"
+                aria-labelledby="setting-model-mapping-label"
+                :value="form.model_mapping"
+                :left-placeholder="t('settings.aliasPlaceholder')"
+                :right-options="modelOptions"
+                :right-placeholder="t('settings.selectModel')"
+                :add-label="t('settings.addMapping')"
+                @change="form.model_mapping = $event"
               />
             </SettingRow>
             <SettingRow
               :label="t('settings.modelChannels')"
-              control-id="setting-model-channels"
+              group-id="setting-model-channels"
               :description="t('settings.modelChannelsHelp')"
               effect="immediate"
               :changed="changedFields.has('model_channels')"
+              :env="environmentKey('model_channels')"
             >
-              <input
-                id="setting-model-channels"
-                v-model.trim="form.model_channels"
-                :class="inputClass"
-                placeholder="gemini-4-argon:playground"
-                autocomplete="off"
-                spellcheck="false"
+              <PairRows
+                role="group"
+                aria-labelledby="setting-model-channels-label"
+                :value="form.model_channels"
+                :left-options="modelOptions"
+                :left-placeholder="t('settings.selectModel')"
+                :right-options="channelOptions"
+                :right-placeholder="t('settings.selectChannel')"
+                :add-label="t('settings.addModelChannel')"
+                @change="form.model_channels = $event"
               />
             </SettingRow>
             <SettingRow
@@ -575,6 +759,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.buildNativeHelp')"
               effect="service"
               :changed="changedFields.has('build_native_nonstream')"
+              :env="environmentKey('build_native_nonstream')"
             >
               <UiSwitch id="setting-build-native" v-model="form.build_native_nonstream" />
             </SettingRow>
@@ -584,6 +769,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.nonstreamKeepaliveHelp')"
               effect="service"
               :changed="changedFields.has('nonstream_keepalive')"
+              :env="environmentKey('nonstream_keepalive')"
             >
               <UiSwitch id="setting-nonstream-keepalive" v-model="form.nonstream_keepalive" />
             </SettingRow>
@@ -593,6 +779,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.fakeStreamHelp')"
               effect="service"
               :changed="changedFields.has('fake_stream')"
+              :env="environmentKey('fake_stream')"
             >
               <UiSwitch id="setting-fake-stream" v-model="form.fake_stream" />
             </SettingRow>
@@ -602,8 +789,69 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.youtubeLinksHelp')"
               effect="service"
               :changed="changedFields.has('youtube_links')"
+              :env="environmentKey('youtube_links')"
             >
               <UiSwitch id="setting-youtube-links" v-model="form.youtube_links" />
+            </SettingRow>
+            <SettingRow
+              :label="t('settings.searchModelAliases')"
+              control-id="setting-search-model-aliases"
+              :description="t('settings.searchModelAliasesHelp')"
+              effect="service"
+              :changed="changedFields.has('search_model_aliases')"
+              :env="environmentKey('search_model_aliases')"
+            >
+              <UiSwitch id="setting-search-model-aliases" v-model="form.search_model_aliases" />
+            </SettingRow>
+            <SettingRow
+              :label="t('settings.googleSearch')"
+              control-id="setting-google-search"
+              :description="t('settings.googleSearchHelp')"
+              effect="service"
+              :changed="changedFields.has('google_search')"
+              :env="environmentKey('google_search')"
+            >
+              <UiSwitch id="setting-google-search" v-model="form.google_search" />
+            </SettingRow>
+            <SettingRow
+              :label="t('settings.continuationRewrite')"
+              control-id="setting-continuation-rewrite"
+              :description="t('settings.continuationRewriteHelp')"
+              effect="service"
+              :changed="changedFields.has('continuation_rewrite')"
+              :env="environmentKey('continuation_rewrite')"
+            >
+              <UiSwitch id="setting-continuation-rewrite" v-model="form.continuation_rewrite" />
+            </SettingRow>
+            <SettingRow
+              :label="t('settings.continuationPrompt')"
+              control-id="setting-continuation-prompt"
+              :description="t('settings.continuationPromptHelp')"
+              effect="service"
+              :changed="changedFields.has('continuation_prompt')"
+              :env="environmentKey('continuation_prompt')"
+            >
+              <textarea
+                id="setting-continuation-prompt"
+                v-model.trim="form.continuation_prompt"
+                :class="[inputClass, 'resize-y disabled:cursor-not-allowed disabled:opacity-50']"
+                :disabled="!form.continuation_rewrite"
+                rows="4"
+                spellcheck="false"
+              />
+            </SettingRow>
+            <SettingRow
+              :label="t('settings.stripThoughtSignatures')"
+              control-id="setting-strip-thought-signatures"
+              :description="t('settings.stripThoughtSignaturesHelp')"
+              effect="service"
+              :changed="changedFields.has('strip_thought_signatures')"
+              :env="environmentKey('strip_thought_signatures')"
+            >
+              <UiSwitch
+                id="setting-strip-thought-signatures"
+                v-model="form.strip_thought_signatures"
+              />
             </SettingRow>
             <SettingRow
               :label="t('settings.waaBackend')"
@@ -611,20 +859,12 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.waaBackendHelp')"
               effect="service"
               :changed="changedFields.has('waa_backend')"
+              :env="environmentKey('waa_backend')"
             >
               <UiSelect id="setting-waa-backend" v-model="form.waa_backend" :class="inputClass">
                 <option value="camoufox">{{ t('settings.waaBackendCamoufox') }}</option>
-                <option value="go">{{ t('settings.waaBackendGo') }}</option>
+                <option value="spidermonkey">{{ t('settings.waaBackendSpiderMonkey') }}</option>
               </UiSelect>
-            </SettingRow>
-            <SettingRow
-              :label="t('settings.temporaryChat')"
-              control-id="setting-temporary"
-              :description="t('settings.temporaryChatHelp')"
-              effect="service"
-              :changed="changedFields.has('temporary_chat')"
-            >
-              <UiSwitch id="setting-temporary" v-model="form.temporary_chat" />
             </SettingRow>
             <SettingRow
               :label="t('settings.initTimeout')"
@@ -632,13 +872,12 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.initTimeoutHelp')"
               effect="service"
               :changed="changedFields.has('init_timeout')"
+              :env="environmentKey('init_timeout')"
             >
-              <input
+              <DurationInput
                 id="setting-init-timeout"
-                v-model.trim="form.init_timeout"
-                :class="inputClass"
-                autocomplete="off"
-                spellcheck="false"
+                v-model="form.init_timeout"
+                :input-class="inputClass"
               />
             </SettingRow>
             <SettingRow
@@ -647,13 +886,59 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.requestTimeoutHelp')"
               effect="service"
               :changed="changedFields.has('request_timeout')"
+              :env="environmentKey('request_timeout')"
             >
-              <input
+              <DurationInput
                 id="setting-request-timeout"
-                v-model.trim="form.request_timeout"
-                :class="inputClass"
-                autocomplete="off"
-                spellcheck="false"
+                v-model="form.request_timeout"
+                :input-class="inputClass"
+              />
+            </SettingRow>
+            <SettingRow
+              :label="t('settings.firstEventHedge')"
+              control-id="setting-first-event-hedge"
+              :description="t('settings.firstEventHedgeHelp')"
+              effect="service"
+              :changed="changedFields.has('first_event_hedge')"
+              :env="environmentKey('first_event_hedge')"
+            >
+              <UiSelect id="setting-first-event-hedge" v-model="hedgeMode" :class="inputClass">
+                <option value="off">{{ t('settings.firstEventHedgeOff') }}</option>
+                <option value="auto">{{ t('settings.firstEventHedgeAuto') }}</option>
+                <option value="custom">{{ t('settings.firstEventHedgeCustom') }}</option>
+              </UiSelect>
+              <div v-if="hedgeMode === 'custom'" class="mt-2 flex items-center gap-2">
+                <input
+                  id="setting-first-event-hedge-seconds"
+                  v-model.trim="form.first_event_hedge"
+                  :class="inputClass"
+                  :aria-label="t('settings.firstEventHedgeSeconds')"
+                  inputmode="numeric"
+                  autocomplete="off"
+                />
+                <span class="shrink-0 text-sm text-gray-400">{{
+                  t('settings.firstEventHedgeUnit')
+                }}</span>
+              </div>
+              <p v-if="hedgeHint" class="mt-2 text-xs leading-5 text-gray-500">{{ hedgeHint }}</p>
+            </SettingRow>
+            <SettingRow
+              :label="t('settings.firstEventHedgeModels')"
+              group-id="setting-first-event-hedge-models"
+              :description="t('settings.firstEventHedgeModelsHelp')"
+              effect="service"
+              :changed="changedFields.has('first_event_hedge_models')"
+              :env="environmentKey('first_event_hedge_models')"
+            >
+              <FilterMenu
+                :label="hedgeModelsLabel"
+                :options="modelIDs"
+                :selected="hedgeModels"
+                :format="(id: string) => id"
+                :search-label="t('settings.modelSearch')"
+                :empty-label="t('settings.modelNone')"
+                :clear-label="t('settings.selectionClear')"
+                @change="form.first_event_hedge_models = $event.join(',')"
               />
             </SettingRow>
           </template>
@@ -665,6 +950,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.proxyHelp')"
               effect="service"
               :changed="changedFields.has('proxy')"
+              :env="environmentKey('proxy')"
             >
               <input
                 id="setting-proxy"
@@ -689,7 +975,7 @@ async function saveConfig(): Promise<void> {
                   >
                     <span class="break-all text-gray-300">{{ maskedProxy(entry.proxy) }}</span>
                     <span
-                      v-tooltip="entry.error || ''"
+                      v-tooltip="entry.error"
                       :class="entry.available ? 'text-green-400' : 'text-red-400'"
                     >
                       {{
@@ -714,6 +1000,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.adminAuthHelp')"
               effect="management"
               :changed="changedFields.has('admin_auth_enabled')"
+              :env="environmentKey('admin_auth_enabled')"
             >
               <UiSwitch id="setting-admin-auth" v-model="form.admin_auth_enabled" />
             </SettingRow>
@@ -723,6 +1010,7 @@ async function saveConfig(): Promise<void> {
                 control-id="setting-admin-username"
                 effect="management"
                 :changed="changedFields.has('admin_username')"
+                :env="environmentKey('admin_username')"
               >
                 <input
                   id="setting-admin-username"
@@ -737,6 +1025,7 @@ async function saveConfig(): Promise<void> {
                 control-id="setting-admin-password"
                 effect="management"
                 :changed="adminPassword !== ''"
+                :env="environmentKey('admin_password')"
               >
                 <input
                   id="setting-admin-password"
@@ -755,6 +1044,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.requestBodyLogHelp')"
               effect="immediate"
               :changed="changedFields.has('request_body_log')"
+              :env="environmentKey('request_body_log')"
             >
               <UiSwitch id="setting-body-log" v-model="form.request_body_log" />
             </SettingRow>
@@ -764,6 +1054,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.logFileHelp')"
               effect="immediate"
               :changed="changedFields.has('log_file')"
+              :env="environmentKey('log_file')"
             >
               <UiSwitch id="setting-log-file" v-model="form.log_file" />
             </SettingRow>
@@ -773,6 +1064,7 @@ async function saveConfig(): Promise<void> {
               :description="t('settings.logMaxTotalHelp')"
               effect="immediate"
               :changed="changedFields.has('log_max_total_mb')"
+              :env="environmentKey('log_max_total_mb')"
             >
               <input
                 id="setting-log-max-total"

@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { vTooltip } from '@/playground/ui/tooltip'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from '@/i18n'
 import UiIcon from '@/playground/ui/UiIcon.vue'
 import '@/playground/styles/run-settings.css'
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     open: boolean
     narrow: boolean
@@ -15,13 +15,36 @@ withDefaults(
   { resettable: true, codeButton: true, title: '' },
 )
 const emit = defineEmits<{ close: []; code: []; reset: [] }>()
-const { t } = useI18n()
+const { t, locale } = useI18n()
+const heading = ref<HTMLElement | null>(null)
+// compact 表示标题放不下时获取代码按钮只显示图标
+const compact = ref(false)
+
+// fit 先显示获取代码按钮的文字，下一帧标题因此被截断时改为只显示图标
+async function fit(): Promise<void> {
+  compact.value = false
+  await new Promise((resolve) => requestAnimationFrame(resolve))
+  const element = heading.value
+  compact.value = element !== null && element.scrollWidth > element.clientWidth
+}
+
+// refit 在挂载、网页字体载入完成与语言或标题变化后重新测量标题
+function refit(): void {
+  void fit()
+}
+
+onMounted(() => {
+  refit()
+  document.fonts.addEventListener('loadingdone', refit)
+})
+onUnmounted(() => document.fonts.removeEventListener('loadingdone', refit))
+watch([locale, () => props.title], refit)
 </script>
 
 <template>
   <aside class="ms-run-settings" :class="{ expanded: open, narrow }" :inert="!open">
     <div class="overlay-header">
-      <h2 class="header-label">{{ title || t('pg.runSettings') }}</h2>
+      <h2 ref="heading" class="header-label">{{ title || t('pg.runSettings') }}</h2>
       <div class="right">
         <button
           v-if="codeButton"
@@ -29,11 +52,12 @@ const { t } = useI18n()
           type="button"
           ms-button
           class="ms-button-borderless ms-button-small"
+          :class="{ 'ms-button-icon': compact }"
           :aria-label="t('pg.getCode')"
           @click="emit('code')"
         >
           <UiIcon name="code" :size="18" />
-          {{ t('pg.getCode') }}
+          <template v-if="!compact">{{ t('pg.getCode') }}</template>
         </button>
         <button
           v-if="resettable"
@@ -114,21 +138,26 @@ const { t } = useI18n()
 
 .overlay-header {
   display: flex;
+  gap: 8px;
   align-items: center;
   justify-content: space-between;
   padding: 16px 16px 0;
 }
 
 .header-label {
+  min-width: 0;
   margin: 0;
+  overflow: hidden;
   font-size: 12px;
   font-weight: 400;
   line-height: 18px;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .right {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   margin-left: auto;
 }
@@ -140,5 +169,6 @@ const { t } = useI18n()
   min-height: 0;
   overflow: hidden auto;
   padding: 16px;
+  scrollbar-gutter: stable;
 }
 </style>
