@@ -12,3 +12,4 @@ bin/*
 !bin/build.sh
 !bin/check.mjs
 !bin/start.sh
+!bin/update.sh
