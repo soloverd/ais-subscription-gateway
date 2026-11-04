@@ -146,6 +146,19 @@ cmd_check() {
     *'"sourceChanged":true'*) echo "  공식 앱이 업데이트됐습니다. 복제본을 다시 만들어야 할 수 있습니다(승인 후 npm run mac:clone)"; status=10 ;;
     *) echo "  복제본 상태를 확인하지 못했습니다" ;;
   esac
+  # 설치된 앱 비교만으로는 아직 내려받지 않은 새 버전을 모르므로, 공식 앱이 업데이트에 쓰는 서버의 정식 버전 목록과 비교한다.
+  local installed latest
+  installed="$(defaults read "/Applications/Antigravity.app/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || true)"
+  latest="$(curl -fsS -m 15 https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/releases 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["version"])' 2>/dev/null || true)"
+  if [ -z "$latest" ]; then
+    echo "  공식 최신 버전을 확인하지 못했습니다 (설치됨 ${installed:-알 수 없음})"
+  elif [ "$latest" = "$installed" ]; then
+    echo "  공식 최신 버전과 같습니다 ($installed)"
+  else
+    echo "  공식 새 버전 $latest 이 나왔습니다 (설치됨 $installed). 공식 앱 업데이트 후 복제본을 다시 만들어야 합니다(승인 후)"
+    status=10
+  fi
   return "$status"
 }
 
