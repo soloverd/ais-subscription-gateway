@@ -109,3 +109,15 @@ Mac 사용자 세션이 없으면 새 Google 로그인은 할 수 없으며, 웹
 - 재시작은 브라우저 도우미(PID 650→61806)와 게이트웨이(PID 271→61941)만 했다. 모델 연결·Tailscale은 유지했다. 재시작 뒤 경고·오류 로그 0건, 로컬·사설 HTTPS `/health` 200, 미인증 관리 API 401, 계정 5개·모델 45개 준비.
 - 실제 구독 요청 1건: `gemini-4-argon`, 주 계정 `charlie.main@example.com`, `playground`, HTTP 200, `completed`, 응답 `OK`, 입력 167·응답 5토큰.
 - 미검증: 관리자 로그인 뒤 버전 탭 화면 자체, Antigravity 화면에서의 요청, 새 Google 로그인·재인증(도우미 경유), 계정 간 실제 전환.
+
+## 원격 백업 저장소
+
+비공개 GitHub 저장소 `soloverd/ais-subscription-gateway` 하나에 운영 기록과 로컬 수정 소스를 브랜치로 나눠 보관한다. 원본 `Mag1cFall/AIStudio2API`에는 푸시하지 않는다.
+
+| 브랜치 | 내용 | 로컬 위치 |
+| --- | --- | --- |
+| `main` | 운영 문서·승인된 `bin/` 스크립트(이 폴더, 로컬 `local/operations-preservation`) | 이 폴더 |
+| `integration/upstream-v0.3.0` | 현재 배포 중인 게이트웨이 소스(원본 v0.3.0 + 로컬 수정) | `~/worktrees/ais-upstream-v0.3.0` |
+| `integration/upstream-669a207` | 직전 배포 소스, 되돌리기용 | `~/worktrees/ais-upstream-integration` |
+
+`service/`의 인증정보·`.env`·DB·백업과 빌드 산출물은 올리지 않는다. 문서와 테스트에 계정 이메일과 사설 주소가 있으므로 저장소를 공개로 바꾸지 않는다.
