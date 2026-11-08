@@ -3,7 +3,6 @@
 !.gitignore
 !README.ko.md
 !HANDOFF.md
-!관리 대시보드.webloc
 !bin/
 bin/*
 !bin/prepare-services.mjs

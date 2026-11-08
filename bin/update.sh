@@ -22,7 +22,8 @@ GOBIN="$ROOT/toolchain/go/bin"
 GW_REPO="Mag1cFall/AIStudio2API"
 GW_BIN="$GW/dist/aistudio2api"
 APP_CLONE="$HOME/Applications/Antigravity Gateway.app"
-HTTPS_URL="https://ais-subscription-gateway.your-tailnet.ts.net"
+# 사설 HTTPS 주소는 개인 값이라 저장소에 두지 않는다. Git 에서 빠지는 로컬 전용 파일 service/ops-local.env 의 HTTPS_URL 줄에서 읽는다.
+HTTPS_URL="$(sed -n 's/^HTTPS_URL=//p' "$SV/ops-local.env" 2>/dev/null || true)"
 PRIVATE_REMOTE="private"
 export PATH="$GOBIN:$PATH"
 
@@ -293,7 +294,7 @@ if(r.status!==200) process.exit(1);
 gateway_verify() {
   say "⑤ 확인: 상태 점검, 설정 점검, 실제 요청"
   wait_health http://127.0.0.1:2048/health 60 || die "로컬 상태 점검 실패" 4
-  echo "  로컬 $(http_code http://127.0.0.1:2048/health) / 사설 HTTPS $(http_code "$HTTPS_URL/health" 15) / 미인증 관리 API $(http_code http://127.0.0.1:2048/api/accounts) (401 이어야 정상)"
+  echo "  로컬 $(http_code http://127.0.0.1:2048/health) / 사설 HTTPS $([ -n "$HTTPS_URL" ] && http_code "$HTTPS_URL/health" 15 || echo "확인 안 함(service/ops-local.env 에 HTTPS_URL 없음)") / 미인증 관리 API $(http_code http://127.0.0.1:2048/api/accounts) (401 이어야 정상)"
   [ "$(http_code http://127.0.0.1:2048/api/accounts)" = 401 ] || die "관리 API 가 인증 없이 열려 있습니다" 4
   node "$ROOT/bin/check.mjs" --config-only | sed 's/^/  /'
   echo "  운영 버전: $("$GOBIN/go" version -m "$SV/aistudio2api" | awk '$1=="mod"{print $3}')"
