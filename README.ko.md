@@ -143,6 +143,7 @@ Mac 사용자 세션이 없으면 새 Google 로그인은 할 수 없으며, 웹
 ### 복제본 재생성 (2026-11-08, 공식 원본 2.29.0 그대로)
 
 - `check`는 공식 새 버전 2.29.1을 알렸지만, 공식 앱이 실제로 받는 Mac 업데이트 목록(`manifest/latest-arm64-mac.yml`, Intel용도 같음)은 아직 2.29.0이었다. `check`가 보는 `/releases`는 OS를 구분하지 않는 목록이다. 2.29.1 Mac 파일은 저장소에 올라와 있지만(2026-11-07) 공식 해시가 공개되지 않아, 사용자 결정으로 정식 배포된 2.29.0으로 다시 만들었다.
+  - 이후 `check`가 `/releases` 대신 Mac(arm64) 배포 목록을 보도록 고쳤다(2026-11-08). 고친 뒤 `check`는 "최신입니다 (복제본 원본 2.29.0)", 종료 코드 0이었다.
 - 공식 파일: 위 목록이 가리키는 `Antigravity.zip`(188,267,225바이트). 목록의 SHA-512와 일치, `codesign --verify --deep --strict` 통과, Gatekeeper `accepted`(`Notarized Developer ID`, Google LLC `EQHXZ8M8AV`), 공증 티켓 확인. 공식 앱은 설치하지 않고 임시 폴더에서 원본으로만 쓴 뒤 지웠다.
 - 임시 폴더 시험 복제본: `prepare`·`verify`(`entitlementsPreserved: true`) 성공 뒤 `restore`로 삭제.
 - 교체: 복제본이 꺼진 상태에서 기존 복제본과 `.clone.json`을 `service/runtime/deployment-backups/20261108T013226Z-antigravity-clone-2.29.0-before-rebuild/`로 옮겼다(Git 제외, 되돌리는 방법은 같은 폴더 `manifest.txt`). 같은 사용자 데이터 폴더(`service/antigravity-app`)로 다시 만들었고 `verify`는 `entitlementsPreserved: true`, `sourceVersion: 2.29.0`이었다.
@@ -175,7 +176,7 @@ bin/update.sh antigravity    # 연결 프로그램: 합치기 → 빌드·시험
 - **충돌**(종료 코드 2): 원본과 내 수정이 같은 곳을 고친 경우다. 해당 폴더에서 정리해 커밋한 뒤 같은 명령을 다시 실행하면 이어서 진행한다. 지켜야 할 내 수정: `ACCOUNT_ORDER` 계정 우선순위, Mac 사용자 세션 브라우저 도우미, 자주 보이는 오류의 한국어 문구, Antigravity 앱 복제 지원.
 - **시험 실패**(3)면 운영은 바뀌지 않는다. **배포 후 90초 안에 응답이 없으면** 이전 실행 파일과 `.env`로 자동으로 되돌린다(4). 백업은 `service/runtime/deployment-backups/<시각>/`에 남는다.
 - 단계만 따로 실행할 수 있다. 예: `bin/update.sh gateway test`, `bin/update.sh gateway verify`.
-- 공식 Antigravity 앱은 `check`가 복제본을 만든 원본 버전(`.clone.json`의 `sourceVersion`)과 공식 업데이트 서버의 최신 정식 버전을 비교해 확인한다. 공식 앱은 설치해 두지 않으며, 복제본을 다시 만들 때만 공식 파일을 받아 원본으로 쓴다. 복제본 `Antigravity Gateway.app`을 다시 만드는 일은 앱 재서명이 포함되므로 별도 승인 후 진행한다. 절차는 위 "Antigravity 공식 앱 2.29.0 반영"을 따른다.
+- 공식 Antigravity 앱은 `check`가 복제본을 만든 원본 버전(`.clone.json`의 `sourceVersion`)과 공식 업데이트 서버의 Mac(arm64) 배포 목록(`manifest/latest-arm64-mac.yml`) 버전을 비교해 확인한다. 공식 앱은 설치해 두지 않으며, 복제본을 다시 만들 때만 공식 파일을 받아 원본으로 쓴다. 복제본 `Antigravity Gateway.app`을 다시 만드는 일은 앱 재서명이 포함되므로 별도 승인 후 진행한다. 절차는 위 "Antigravity 공식 앱 2.29.0 반영"을 따른다.
 - 게이트웨이 빌드에 필요한 SpiderMonkey·libwebp 정적 라이브러리는 원본 `.github/actions/static-libraries/action.yml`이 지정한 버전을 쓴다(v0.3.2부터. 그 전에는 `build.yml`). 없으면 GitHub 등록 해시와 일치할 때만 내려받는다. `bin/build.sh`는 v0.3.0 이전 방식이라 쓰지 않는다.
 
 ### 시험한 범위 (2026-11-04)
