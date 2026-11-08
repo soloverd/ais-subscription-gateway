@@ -124,7 +124,7 @@ cmd_check() {
   else
     ahead="$(git -C "$GW" rev-list --count gateway.."$target")"
     echo "  새 버전: $target (내 버전에 없는 원본 커밋 ${ahead}개)"
-    git -C "$GW" log --oneline gateway.."$target" | head -10 | sed 's/^/    /'
+    git -C "$GW" log --oneline -10 gateway.."$target" | sed 's/^/    /'
     status=10
   fi
 
@@ -135,7 +135,7 @@ cmd_check() {
   else
     ahead="$(git -C "$AG" rev-list --count antigravity..origin/main)"
     echo "  새 커밋 ${ahead}개"
-    git -C "$AG" log --oneline antigravity..origin/main | head -10 | sed 's/^/    /'
+    git -C "$AG" log --oneline -10 antigravity..origin/main | sed 's/^/    /'
     status=10
   fi
 
@@ -162,22 +162,23 @@ cmd_check() {
 
 # ─── 게이트웨이 ─────────────────────────────────────────
 
-# 빌드에 필요한 SpiderMonkey 정적 라이브러리. 없으면 원본 작성자의 GitHub 릴리스에서 받고, 등록된 SHA-256 과 일치할 때만 쓴다.
-spidermonkey_dir() {
+# 빌드에 필요한 정적 라이브러리(SpiderMonkey, v0.3.2부터 libwebp 추가). 원본 static-libraries 액션이 지정한 버전을 쓴다.
+# 없으면 원본 작성자의 GitHub 릴리스에서 받고, 등록된 SHA-256 과 일치할 때만 쓴다.
+static_lib_dir() { # $1 이름(spidermonkey|libwebp), $2 원본 저장소(Mag1cFall/...), $3 action.yml 의 버전 변수명
   local version dir asset tar want got
-  version="$(awk '/SPIDERMONKEY:/{print $2; exit}' "$GW/.github/workflows/build.yml")"
-  [ -n "$version" ] || die "원본 build.yml 에서 SpiderMonkey 버전을 찾지 못했습니다"
-  dir="$ROOT/toolchain/spidermonkey/$version-darwin-arm64"
-  if [ ! -f "$dir/lib/libjs_static.a" ]; then
-    asset="spidermonkey-$version-darwin-arm64.tar.gz"
-    tar="$ROOT/toolchain/spidermonkey/download/$asset"
+  version="$(awk -v k="$3:" '$1==k{print $2; exit}' "$GW/.github/actions/static-libraries/action.yml")"
+  [ -n "$version" ] || die "원본 static-libraries 액션에서 $1 버전을 찾지 못했습니다"
+  dir="$ROOT/toolchain/$1/$version-darwin-arm64"
+  if [ ! -d "$dir/lib" ]; then
+    asset="$1-$version-darwin-arm64.tar.gz"
+    tar="$ROOT/toolchain/$1/download/$asset"
     mkdir -p "$(dirname "$tar")"
-    say "SpiderMonkey $version 내려받기" >&2
-    want="$(curl -fsSL --max-time 20 "https://api.github.com/repos/Mag1cFall/firefox/releases/tags/$version" |
+    say "$1 $version 내려받기" >&2
+    want="$(curl -fsSL --max-time 20 "https://api.github.com/repos/$2/releases/tags/$version" |
       python3 -c 'import json,sys; n=sys.argv[1]; print(next(a["digest"] for a in json.load(sys.stdin)["assets"] if a["name"]==n).split(":",1)[1])' "$asset")"
-    curl -fsSL -o "$tar" "https://github.com/Mag1cFall/firefox/releases/download/$version/$asset"
+    curl -fsSL -o "$tar" "https://github.com/$2/releases/download/$version/$asset"
     got="$(shasum -a 256 "$tar" | cut -d' ' -f1)"
-    [ "$got" = "$want" ] || { rm -f "$tar"; die "SpiderMonkey 해시 불일치 (받은 $got, GitHub $want)"; }
+    [ "$got" = "$want" ] || { rm -f "$tar"; die "$1 해시 불일치 (받은 $got, GitHub $want)"; }
     mkdir -p "$dir"
     tar -xzf "$tar" -C "$dir"
   fi
@@ -185,9 +186,10 @@ spidermonkey_dir() {
 }
 
 go_env() {
-  local sm
-  sm="$(spidermonkey_dir)"
-  export CGO_ENABLED=1 CGO_CXXFLAGS="-I$sm/include" CGO_LDFLAGS="-L$sm/lib" GOFLAGS=-mod=readonly
+  local sm webp
+  sm="$(static_lib_dir spidermonkey Mag1cFall/firefox SPIDERMONKEY)"
+  webp="$(static_lib_dir libwebp Mag1cFall/libwebp LIBWEBP)"
+  export CGO_ENABLED=1 CGO_CPPFLAGS="-I$sm/include -I$webp/include" CGO_LDFLAGS="-L$sm/lib -L$webp/lib" GOFLAGS=-mod=readonly
 }
 
 gateway_merge() {
