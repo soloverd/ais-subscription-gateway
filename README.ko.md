@@ -5,7 +5,7 @@
 | 할 일 | 진입점 |
 | --- | --- |
 | Antigravity에서 구독 모델 사용 | `~/Applications/Antigravity Gateway.app` → 모델 목록의 **구독 · AI Studio Argon** |
-| 계정 추가·상태 확인 | [관리 대시보드](https://ais-subscription-gateway.your-tailnet.ts.net/) 또는 이 폴더의 **관리 대시보드.webloc** |
+| 계정 추가·상태 확인 | [관리 대시보드](https://ais-subscription-gateway.your-tailnet.ts.net/) 또는 이 폴더의 **관리 대시보드.webloc**(로컬 전용, 저장소에는 없음) |
 | 같은 Mac에서 관리 | http://127.0.0.1:2048 |
 | 다른 호환 클라이언트 연결 | 로컬 OpenAI Base URL: `http://127.0.0.1:2048/v1` |
 
@@ -155,13 +155,30 @@ Mac 사용자 세션이 없으면 새 Google 로그인은 할 수 없으며, 웹
 
 내 앱은 남이 만든 원본 두 개에 내 수정을 덧붙여 조합한 것이다. 원본에 새 버전이 나오면 내 수정은 살린 채 합쳐서 다시 반영한다. 정책은 **알림 후 승인 반영**이다(2026-11-04 사용자 결정). 새 버전을 확인해 알리기만 하고, 사용자가 승인했을 때만 반영한다.
 
-| 부품 | 원본 | 따라가는 기준 | 내 버전이 있는 곳 (로컬 폴더 / 비공개 저장소 브랜치) |
+| 부품 | 원본 | 따라가는 기준 | 내 버전이 있는 곳 (로컬 폴더 / 저장소 브랜치) |
 | --- | --- | --- | --- |
 | 게이트웨이 | `Mag1cFall/AIStudio2API` | 최신 **정식 릴리스** (대시보드 버전 탭과 같은 기준) | `upstream/` / `gateway` |
 | 연결 프로그램 | `vahapogut/antigravity-add-model` | 원본 `main` (정식 릴리스를 내지 않음) | `integrations/antigravity-add-model/` / `antigravity` |
 | 운영 기록·스크립트 | — | — | 이 폴더 / `main` |
 
-비공개 저장소는 `soloverd/ais-subscription-gateway` 하나다. 원본 저장소에는 푸시하지 않는다. 배포할 때마다 `gateway-날짜`, `antigravity-날짜` 태그를 붙여 어떤 소스가 운영에 들어갔는지 남긴다. `service/`의 인증정보·`.env`·DB·백업과 빌드 산출물은 올리지 않으며, 문서와 테스트에 계정 이메일·사설 주소가 있으므로 저장소를 공개로 바꾸지 않는다.
+저장소는 공개 저장소 `soloverd/ais-subscription-gateway` 하나다(2026-11-08부터). 원본 저장소에는 푸시하지 않는다. 배포할 때마다 `gateway-날짜`, `antigravity-날짜` 태그를 붙여 어떤 소스가 운영에 들어갔는지 남긴다. `service/`의 인증정보·`.env`·DB·백업과 빌드 산출물은 올리지 않는다.
+
+### 공개 저장소의 개인 값 처리 (2026-11-08)
+
+이 저장소는 누구나 볼 수 있다. 그래서 계정 이메일·사설 주소·Mac 사용자 이름·쓰는 도구 이름 같은 개인 값은 지난 기록까지 모두 별칭으로 바꿨다. 남이 만든 원본 커밋은 그대로 두고 내 커밋(작성자 `local-operator`)만 다시 썼다. 원본 커밋 번호가 그대로이므로 원본 새 버전 합치기는 전과 같이 된다.
+
+| 원래 값 | 별칭 |
+| --- | --- |
+| 주 계정 | `charlie.main@example.com` |
+| 보조 계정 3개 (우선순위 순) | `alpha.sub@example.com`, `bravo.sub@example.com`, `delta.sub@example.com` |
+| Tailscale 사설 주소 | `ais-subscription-gateway.your-tailnet.ts.net` |
+| Mac 사용자 폴더·이름 | `~`, `macuser` |
+
+- 별칭은 우선순위 순서와 알파벳 순서가 서로 다르게 골랐다. 계정 순서 테스트가 "알파벳순으로 고르면 보조 계정이 주 계정보다 먼저 뽑힌다"는 상황을 확인하기 때문이다.
+- 공개 기록에서는 내 커밋 번호(문서 속 번호와 실행 파일 버전 표시 포함)도 다시 쓴 기록의 번호로 바뀌어 있다.
+- 실제 값은 Git에서 빠지는 로컬 전용 파일 `service/ops-local.env`에만 둔다. `bin/update.sh`는 여기서 `HTTPS_URL`(확인 단계의 사설 HTTPS 주소)을, `bin/check.mjs`는 `EXPECTED_ACCOUNT_ORDER`(기대하는 계정 순서)를 읽는다. `관리 대시보드.webloc`도 로컬 전용이다.
+- 앞으로 기록을 쓸 때도 실제 값 대신 위 별칭을 쓴다.
+- 원본 라이선스: `gateway` 브랜치는 `Mag1cFall/AIStudio2API`(MIT), `antigravity` 브랜치는 `vahapogut/antigravity-add-model`(Apache License 2.0)을 고친 것이다. 각 브랜치의 LICENSE는 그대로 두며, 고친 내용은 각 브랜치의 내 커밋에서 볼 수 있다.
 
 ### 명령
 
