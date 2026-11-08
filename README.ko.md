@@ -137,8 +137,18 @@ Mac 사용자 세션이 없으면 새 Google 로그인은 할 수 없으며, 웹
 - 충돌 1곳(`CHANGELOG.md`)은 내 macOS 복제 항목과 원본 Windows 항목을 둘 다 남겼다(`5956739`).
 - `update.sh`로 처음 시험을 돌리자 macOS 복제 테스트 3개가 실패했다. 원인은 스크립트의 `umask 077`(새 파일을 나만 열 수 있게 하는 설정) 아래에서 Node `fs.cpSync`가 실행 파일 권한을 755→700으로 바꾸는 것이었다. 원래 있던 버그이며 원본 변경과는 무관하다. 복사 직후 원본 권한을 되돌리도록 `scripts/macos-clone.mjs`를 고쳤다(`0dcca7e`).
 - 확인: 전체 테스트 1678개 통과(1개 건너뜀), 모델 연결 서비스 재시작(PID 314→18880), 모델 연결 서비스·게이트웨이 `/health` 200. 시작할 때 나오는 `electron-log` 앱 이름 경고는 예전부터 있던 것이다.
-- 앱에 들어가는 코드가 바뀌었으므로 새 기능이 Antigravity 화면에 반영되려면 복제본을 다시 만들어야 한다. 공식 앱 2.29.1(복제본 원본 2.29.0) 반영과 함께 별도 승인 뒤 진행한다.
+- 앱에 들어가는 코드가 바뀌었으므로 복제본을 다시 만들었다(아래 "복제본 재생성").
 - 미검증: Antigravity 화면에서의 실제 요청.
+
+### 복제본 재생성 (2026-11-08, 공식 원본 2.29.0 그대로)
+
+- `check`는 공식 새 버전 2.29.1을 알렸지만, 공식 앱이 실제로 받는 Mac 업데이트 목록(`manifest/latest-arm64-mac.yml`, Intel용도 같음)은 아직 2.29.0이었다. `check`가 보는 `/releases`는 OS를 구분하지 않는 목록이다. 2.29.1 Mac 파일은 저장소에 올라와 있지만(2026-11-07) 공식 해시가 공개되지 않아, 사용자 결정으로 정식 배포된 2.29.0으로 다시 만들었다.
+- 공식 파일: 위 목록이 가리키는 `Antigravity.zip`(188,267,225바이트). 목록의 SHA-512와 일치, `codesign --verify --deep --strict` 통과, Gatekeeper `accepted`(`Notarized Developer ID`, Google LLC `EQHXZ8M8AV`), 공증 티켓 확인. 공식 앱은 설치하지 않고 임시 폴더에서 원본으로만 쓴 뒤 지웠다.
+- 임시 폴더 시험 복제본: `prepare`·`verify`(`entitlementsPreserved: true`) 성공 뒤 `restore`로 삭제.
+- 교체: 복제본이 꺼진 상태에서 기존 복제본과 `.clone.json`을 `service/runtime/deployment-backups/20261108T013226Z-antigravity-clone-2.29.0-before-rebuild/`로 옮겼다(Git 제외, 되돌리는 방법은 같은 폴더 `manifest.txt`). 같은 사용자 데이터 폴더(`service/antigravity-app`)로 다시 만들었고 `verify`는 `entitlementsPreserved: true`, `sourceVersion: 2.29.0`이었다.
+- 실행 확인: 앱 2.29.0 시작, 언어 서버가 복제본 내부 프록시(`localhost`) 사용, 로그인 유지(`fetchUserInfo` 200), 모델 목록 가로채기(`Intercepting fetchAvailableModels`) 정상.
+- 앱 등록 정리: 임시 원본과 백업이 macOS 앱 목록(LaunchServices)에 등록돼 있어 등록만 해제했다(파일은 그대로). `antigravity://` 링크는 새 복제본으로 열린다.
+- 미검증: Antigravity 화면에서 구독 모델로 실제 메시지 보내기.
 
 ## 업데이트 유지보수 (두 원본을 따라 내 앱 최신 유지)
 
