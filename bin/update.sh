@@ -141,12 +141,13 @@ cmd_check() {
 
   say "Antigravity 공식 앱 (복제본 'Antigravity Gateway.app' 의 원본)"
   # 공식 앱은 지우고 복제본만 쓸 수 있으므로, 설치된 공식 앱 대신 복제본을 만든 원본 버전을
-  # 공식 앱이 업데이트에 쓰는 서버의 최신 정식 버전과 비교한다.
+  # 공식 앱이 업데이트에 쓰는 서버의 Mac(arm64) 배포 목록 버전과 비교한다.
+  # /releases 는 OS 구분이 없어 Mac 에 아직 배포되지 않은 버전(예: 2.29.1)도 최신으로 보이므로 쓰지 않는다.
   local made latest
   made="$(cd "$AG" && node scripts/macos-clone.mjs verify --target "$APP_CLONE" --json 2>/dev/null \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["sourceVersion"])' 2>/dev/null || true)"
-  latest="$(curl -fsS -m 15 https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/releases 2>/dev/null \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["version"])' 2>/dev/null || true)"
+  latest="$(curl -fsS -m 15 https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml 2>/dev/null \
+    | awk '$1=="version:"{print $2; exit}' || true)"
   if [ -z "$made" ]; then
     echo "  복제본 상태를 확인하지 못했습니다"
   elif [ -z "$latest" ]; then
