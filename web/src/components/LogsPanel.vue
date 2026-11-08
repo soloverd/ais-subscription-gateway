@@ -321,7 +321,7 @@ onUnmounted(() => {
 <template>
   <section class="flex min-h-0 flex-1 flex-col bg-canvas">
     <div
-      class="flex min-h-10 flex-wrap items-center gap-x-3 gap-y-2 border-b border-line bg-panel px-4 py-1.5"
+      class="page-x flex min-h-10 flex-wrap items-center gap-x-3 gap-y-2 overflow-hidden border-b border-line bg-panel py-1.5 [scrollbar-gutter:stable]"
     >
       <div class="flex items-center gap-2" role="group" :aria-label="t('logs.level')">
         <span class="hidden text-xs text-gray-400 sm:inline">{{ t('logs.level') }}:</span>
@@ -397,7 +397,7 @@ onUnmounted(() => {
 
     <div
       ref="output"
-      class="min-h-0 flex-1 overflow-auto [scrollbar-gutter:stable] bg-canvas p-2 font-mono text-[13px] leading-5"
+      class="page-x min-h-0 flex-1 overflow-auto [scrollbar-gutter:stable] bg-canvas py-2 font-mono text-[13px] leading-5"
       @scroll.passive="followScroll"
       @collapse-resize="followDetails"
     >

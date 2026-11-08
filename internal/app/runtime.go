@@ -183,7 +183,7 @@ type trackedService struct {
 type modelCatalogService interface {
 	RefreshAccountModels(context.Context, string, bool) ([]aistudio.Model, error)
 	RefreshAccountState(context.Context, string, bool) (aistudio.AccountRefresh, error)
-	ReclaimIdleInlineMedia(context.Context) error
+	ReclaimExpiredResources(context.Context) error
 	ReclaimIdleAssistantApplets(context.Context) error
 	CachedModels() []aistudio.Model
 }
@@ -833,12 +833,13 @@ func (service *trackedService) syncAccountModels(ctx context.Context, accountID 
 	return models, err
 }
 
-// retryModelCatalogs 每 30 秒重新载入待同步账户的页面重试目录，自 startedAt 起每 24 小时重新载入启用账户的页面读取权益与目录；闲置的写代码助手应用在启动时与每 10 分钟删除，闲置的内联附件每 10 分钟删除
+// retryModelCatalogs 每 30 秒重新载入待同步账户的页面重试目录，自 startedAt 起每 24 小时重新载入启用账户的页面读取权益与目录；闲置的写代码助手应用与到期资源在启动时与每 10 分钟删除
 func (service *trackedService) retryModelCatalogs(ctx context.Context, startedAt time.Time) {
 	var patrol sync.WaitGroup
 	defer patrol.Wait()
 	patrol.Go(func() { service.patrolAccountStates(ctx, startedAt) })
 	service.reclaimIdleAssistantApplets(ctx)
+	service.reclaimExpiredResources(ctx)
 	ticker := time.NewTicker(modelCatalogRetryInterval)
 	defer ticker.Stop()
 	reclaimTicker := time.NewTicker(idleResourceReclaimInterval)
@@ -848,9 +849,7 @@ func (service *trackedService) retryModelCatalogs(ctx context.Context, startedAt
 		case <-ctx.Done():
 			return
 		case <-reclaimTicker.C:
-			if err := service.catalog.ReclaimIdleInlineMedia(ctx); err != nil {
-				service.requests.log("service", "WARN", fmt.Sprintf("闲置内联附件删除失败: %v", err))
-			}
+			service.reclaimExpiredResources(ctx)
 			service.reclaimIdleAssistantApplets(ctx)
 		case <-ticker.C:
 			if !service.retryAccountModelCatalogs(ctx) {
@@ -864,6 +863,13 @@ func (service *trackedService) retryModelCatalogs(ctx context.Context, startedAt
 func (service *trackedService) reclaimIdleAssistantApplets(ctx context.Context) {
 	if err := service.catalog.ReclaimIdleAssistantApplets(ctx); err != nil {
 		service.requests.log("service", "WARN", fmt.Sprintf("闲置写代码助手应用删除失败: %v", err))
+	}
+}
+
+// reclaimExpiredResources 删除到期的内联附件、上传文件、生成视频与 Live 续接绑定，失败的留待下一轮
+func (service *trackedService) reclaimExpiredResources(ctx context.Context) {
+	if err := service.catalog.ReclaimExpiredResources(ctx); err != nil && ctx.Err() == nil {
+		service.requests.log("service", "WARN", fmt.Sprintf("到期资源删除失败: %v", err))
 	}
 }
 
@@ -1352,8 +1358,8 @@ func (closer *trackedMediaReadCloser) Close() error {
 	return closer.err
 }
 
-// acquireWarmLease 取得 Worker 已就绪的账户租约，planLimitFallback 为 true 时全部账户冷却且排队超过上限时改用套餐限额冷却中的账户
-func (service *trackedService) acquireWarmLease(ctx context.Context, selection aistudio.AccountSelection, planLimitFallback bool) (*aistudio.AccountLease, error) {
+// acquireWarmLease 取得 Worker 已就绪的账户租约，quotaFallback 为 true 时全部账户冷却且排队超过上限时改用套餐限额或每日限额冷却中的账户
+func (service *trackedService) acquireWarmLease(ctx context.Context, selection aistudio.AccountSelection, quotaFallback bool) (*aistudio.AccountLease, error) {
 	fixedAccount := strings.TrimSpace(selection.AccountID) != "" || strings.TrimSpace(selection.ResourceID) != ""
 	failedWorkers := make(map[string]struct{})
 	var promoteFailure error
@@ -1491,8 +1497,8 @@ func (service *trackedService) acquireWarmLease(ctx context.Context, selection a
 		if !groups.EarliestCooldown.Until.IsZero() {
 			remaining := time.Until(groups.EarliestCooldown.Until)
 			if remaining > cooldownQueueLimit {
-				if planLimitFallback && !selection.IgnorePlanLimitCooldown {
-					selection.IgnorePlanLimitCooldown = true
+				if quotaFallback && !selection.IgnoreQuotaCooldown {
+					selection.IgnoreQuotaCooldown = true
 					continue
 				}
 				return nil, &aistudio.AllCoolingError{ModelID: selection.ModelID, Until: groups.EarliestCooldown.Until, Reason: groups.EarliestCooldown.Reason}
@@ -1756,8 +1762,8 @@ type generateRetry struct {
 	attemptFailure error
 	// missingInlineMedia 表示已因复用的内联附件文件不存在而在同一账户重试过
 	missingInlineMedia bool
-	// planLimitSeen 表示已有尝试收到套餐限额拒绝，之后全部账户冷却时不再改用套餐限额冷却中的账户
-	planLimitSeen bool
+	// quotaRejected 表示已有尝试收到套餐限额或每日限额拒绝，之后全部账户冷却时不再改用这两种冷却中的账户
+	quotaRejected bool
 }
 
 // attemptOutcome 是失败尝试处理后的错误与换号决定
@@ -1861,15 +1867,15 @@ func (service *trackedService) generateWithRetry(
 				"排队等待 | 已等待=%s | 模型=%s", waited, modelID,
 			))
 		})
-		planLimitFallback := !retry.planLimitSeen && selection.ResourceID == ""
-		lease, acquireErr := service.acquireWarmLease(requestCtx, selection, planLimitFallback)
+		quotaFallback := !retry.quotaRejected && selection.ResourceID == ""
+		lease, acquireErr := service.acquireWarmLease(requestCtx, selection, quotaFallback)
 		var buildCooling *aistudio.AllCoolingError
 		if acquireErr != nil && selection.Channel == aistudio.ChannelBuild && requestCtx.Err() == nil && !aistudio.RequestBuildOnly(request) &&
 			(errors.Is(acquireErr, aistudio.ErrNoEligibleAccount) || errors.As(acquireErr, &buildCooling)) {
 			// 没有账户能经 Build 服务时改用 Playground，Playground 无法表达的设置按其最接近的形式发送
 			selection.Channel = ""
 			fallbackReason = "Build 通道没有可用账户"
-			lease, acquireErr = service.acquireWarmLease(requestCtx, selection, planLimitFallback)
+			lease, acquireErr = service.acquireWarmLease(requestCtx, selection, quotaFallback)
 		}
 		queueDelayed := queueWait.finish()
 		if acquireErr == nil && selection.PreferredChannel == aistudio.ChannelBuild && lease.Channel() != aistudio.ChannelBuild {
@@ -2062,11 +2068,16 @@ func (service *trackedService) runAttempt(
 	attempt *generateAttempt,
 ) {
 	lease, accountLabel := attempt.lease, attempt.accountLabel
+	inlineImages := false
 	for _, model := range service.modelSnapshot() {
-		if model.ID == modelID && model.Capabilities["interaction_task"] {
+		if model.ID != modelID {
+			continue
+		}
+		if model.Capabilities["interaction_task"] {
 			// agent 后台任务只发送 AgentInput 选出的内容，其余轮次的文件不复制、附件不上传
 			request.Contents = aistudio.AgentInput(request.Contents, request.PreviousInteractionID != "")
 		}
+		inlineImages = model.Capabilities["interaction_stream"]
 	}
 	originalContents := request.Contents
 	ctx = aistudio.ContextWithAccountLease(ctx, lease)
@@ -2096,8 +2107,8 @@ func (service *trackedService) runAttempt(
 	if err == nil && mediaCount > 0 {
 		uploadStartedAt := time.Now()
 		request.Contents, attempt.copies, err = service.service.(interface {
-			UploadInlineMediaToLease(context.Context, *aistudio.AccountLease, []aistudio.Content, *aistudio.TemporaryFileCopies) ([]aistudio.Content, *aistudio.TemporaryFileCopies, error)
-		}).UploadInlineMediaToLease(ctx, lease, request.Contents, attempt.copies)
+			UploadInlineMediaToLease(context.Context, *aistudio.AccountLease, []aistudio.Content, *aistudio.TemporaryFileCopies, bool) ([]aistudio.Content, *aistudio.TemporaryFileCopies, error)
+		}).UploadInlineMediaToLease(ctx, lease, request.Contents, attempt.copies, inlineImages)
 		if err == nil {
 			service.requests.log(accountLabel, "INFO", fmt.Sprintf(
 				"内联附件处理完成 | 附件=%d | 原始=%dB | 耗时=%s",
@@ -2199,7 +2210,7 @@ func (service *trackedService) settleAttempt(
 	}
 	cooldown, quotaFailure := aistudio.QuotaCooldownForError(err, time.Now())
 	if quotaFailure {
-		retry.planLimitSeen = retry.planLimitSeen || cooldown.Kind == aistudio.PlanLimitKind
+		retry.quotaRejected = retry.quotaRejected || aistudio.RequestQuotaCooldown(cooldown.Reason)
 		modelAccessScope := lease.CooldownScope(modelID)
 		scopeLabel := modelAccessScope
 		if cooldown.Global {
