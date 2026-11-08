@@ -120,6 +120,17 @@ Mac 사용자 세션이 없으면 새 Google 로그인은 할 수 없으며, 웹
 - 이번 요청은 주 계정이 아닌 `alpha.sub` 계정을 썼다. 업데이트 전(01:20~01:22) 요청도 같은 계정이었으므로 이번 교체 때문은 아니다.
 - 이후(2026-11-05 20:49) macOS 저장 공간 정리로 공식 앱 `/Applications/Antigravity.app`과 위 2.26.0 보관 폴더가 지워졌다. 사용자는 공식 앱을 복구하지 않고 복제본만 쓰기로 했다. 복제본은 공식 앱 없이도 정상 실행됨을 확인했다(로그인 200, 모델 목록 가로채기). Launchpad에 남은 공식 앱 아이콘은 Launchpad 목록 파일에서 해당 항목(`com.google.antigravity`)을 지우고 Dock을 다시 시작해 정리했다. 이제 Spotlight·Launchpad·`antigravity://` 링크는 모두 복제본으로 연결된다.
 
+## 원본 v0.3.2 게이트웨이 반영 (2026-11-08)
+
+- 매일 확인에서 새 버전을 알렸고 사용자 승인 뒤 `bin/update.sh gateway`로 반영했다. 원본 `v0.3.2`(커밋 4개: 긴 글·첫 시작 속도 개선, 이미지·음성 변환 가속, 63자 넘는 도구 이름 지원)를 합친 내 커밋은 `93efe23`, 태그 `gateway-2026-11-08`이다.
+- 충돌 1곳(`internal/aistudio/assistant.go`): 원본이 생성 실패 처리를 새 함수(`decodeAssistantFailure`)로 옮겨서 원본 구조를 따르고, 한국어 문구 "생성 단계 실패:"를 새 함수에 다시 넣었다. `ACCOUNT_ORDER`·브라우저 도우미(`CAMOUFOX_HOST_SOCKET`)·다른 한국어 문구는 자동으로 합쳐져 그대로 남았다.
+- v0.3.2부터 빌드에 libwebp 정적 라이브러리(`v1.6.0-aistudio2api.1`, SHA-256 `66394cee…79a6`, GitHub 등록값과 일치)도 필요하다. 버전은 원본 `.github/actions/static-libraries/action.yml`에서 읽도록 `bin/update.sh`를 고쳤다(`d8ef756`).
+- 확인: 관리 화면 빌드, Go 테스트 5개 패키지(`aistudio`, `api`, `app`, `camoufoxnative`, `config`) 통과. 교체 뒤 게이트웨이 재시작(PID 310→82581), 로컬·사설 HTTPS `/health` 200, 미인증 관리 API 401, 설정 점검 통과, 실제 구독 요청 HTTP 200 응답 `OK`(225토큰), 재시작 뒤 로그 경고·오류 0건.
+- 실행 파일 SHA-256 `e2da0f440957ca6567ad811f5ebad131abb22897c921820cc215035d7f179ad3`, 운영 버전 표시 `v0.3.3-0.20261108010005-93efe2331e5a`. 이전 실행 파일·`.env`·DB 백업은 `service/runtime/deployment-backups/20261108T010602Z/`(Git 제외)에 있다.
+- 새 버전은 첫 시작 때 현재 쓰는 실행 방식 `WAA_BACKEND`를 `.env`에 명시적으로 적는다(항목 1개 추가, 원본 설계). 되돌릴 때는 이전 실행 파일과 `env.previous`를 함께 복원한다.
+- 이번이 `update.sh`로 실제 백업·교체·재시작까지 간 첫 실행이다. 자동 되돌리기 경로는 실행되지 않았다(배포가 정상이었음).
+- 미검증: Antigravity 화면에서의 요청, 관리자 로그인 뒤 버전 탭 화면.
+
 ## 업데이트 유지보수 (두 원본을 따라 내 앱 최신 유지)
 
 내 앱은 남이 만든 원본 두 개에 내 수정을 덧붙여 조합한 것이다. 원본에 새 버전이 나오면 내 수정은 살린 채 합쳐서 다시 반영한다. 정책은 **알림 후 승인 반영**이다(2026-11-04 사용자 결정). 새 버전을 확인해 알리기만 하고, 사용자가 승인했을 때만 반영한다.
@@ -146,7 +157,7 @@ bin/update.sh antigravity    # 연결 프로그램: 합치기 → 빌드·시험
 - **시험 실패**(3)면 운영은 바뀌지 않는다. **배포 후 90초 안에 응답이 없으면** 이전 실행 파일과 `.env`로 자동으로 되돌린다(4). 백업은 `service/runtime/deployment-backups/<시각>/`에 남는다.
 - 단계만 따로 실행할 수 있다. 예: `bin/update.sh gateway test`, `bin/update.sh gateway verify`.
 - 공식 Antigravity 앱은 `check`가 복제본을 만든 원본 버전(`.clone.json`의 `sourceVersion`)과 공식 업데이트 서버의 최신 정식 버전을 비교해 확인한다. 공식 앱은 설치해 두지 않으며, 복제본을 다시 만들 때만 공식 파일을 받아 원본으로 쓴다. 복제본 `Antigravity Gateway.app`을 다시 만드는 일은 앱 재서명이 포함되므로 별도 승인 후 진행한다. 절차는 위 "Antigravity 공식 앱 2.29.0 반영"을 따른다.
-- 게이트웨이 빌드에 필요한 SpiderMonkey 라이브러리는 원본 `build.yml`이 지정한 버전을 쓴다. 없으면 GitHub 등록 해시와 일치할 때만 내려받는다. `bin/build.sh`는 v0.3.0 이전 방식이라 쓰지 않는다.
+- 게이트웨이 빌드에 필요한 SpiderMonkey·libwebp 정적 라이브러리는 원본 `.github/actions/static-libraries/action.yml`이 지정한 버전을 쓴다(v0.3.2부터. 그 전에는 `build.yml`). 없으면 GitHub 등록 해시와 일치할 때만 내려받는다. `bin/build.sh`는 v0.3.0 이전 방식이라 쓰지 않는다.
 
 ### 시험한 범위 (2026-11-04)
 
