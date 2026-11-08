@@ -242,6 +242,10 @@ export async function prepareMacClone(options = {}, operations = {}) {
       force: false,
       errorOnExist: true,
     });
+    // cpSync 는 현재 umask 를 권한에 적용한다(예: umask 077 이면 실행 파일 755 → 700). 원본 권한을 그대로 되돌린다.
+    for (const { name, stat } of walk(source)) {
+      if (!stat.isSymbolicLink()) fs.chmodSync(path.join(clone, name), stat.mode & 0o777);
+    }
     // 서명 전 복제본 무결성: 원본과 파일 내용/모드/링크가 완전히 같아야 한다.
     if (hashDirectory(clone) !== sourceHash) fail('CLONE_MISMATCH', 'The unsigned clone differs from the original; nothing was installed.');
     const resources = path.join(clone, 'Contents', 'Resources');
